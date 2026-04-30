@@ -238,10 +238,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // ===== Import =====
   app.post("/api/import/parse", (req, res) => {
-    const { content } = req.body || {};
+    const { content, accountId } = req.body || {};
     if (typeof content !== "string") return res.status(400).json({ message: "content required" });
     const parsed = parseCsv(content);
-    res.json({ headers: parsed.headers, rows: parsed.rows.slice(0, 100), rowCount: parsed.rows.length, suggested: parsed.suggested });
+    // Credit-card statements (Amex, Chase, etc.) export charges as POSITIVE numbers
+    // and payments/credits as NEGATIVE — the opposite of bank checking accounts.
+    // Default invertSign=true for credit_card accounts so charges become outflows (negative cents).
+    const suggested = { ...parsed.suggested };
+    if (accountId) {
+      const acct = storage.getAccount(Number(accountId));
+      if (acct && acct.type === "credit_card" && suggested.amountCol) {
+        suggested.invertSign = true;
+      }
+    }
+    res.json({ headers: parsed.headers, rows: parsed.rows.slice(0, 100), rowCount: parsed.rows.length, suggested });
   });
   app.post("/api/import/preview", (req, res) => {
     const { accountId, content, columnMap } = req.body || {};
@@ -316,25 +326,101 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // ===== Dashboard =====
-  app.get("/api/dashboard", (_req, res) => {
+  app.get("/api/dashboard", (req, res) => {
     const accounts = storage.listAccounts().filter((a) => !a.archived);
     const today = new Date();
-    const startMonth = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().slice(0, 10);
-    const startLastMonth = new Date(today.getFullYear(), today.getMonth() - 1, 1).toISOString().slice(0, 10);
-    const endLastMonth = new Date(today.getFullYear(), today.getMonth(), 0).toISOString().slice(0, 10);
+    const period = (String(req.query.period || "month")) as "week" | "month" | "year";
 
-    const monthTxs = storage.listTransactions({ startDate: startMonth, excludeBusiness: true });
-    const lastMonthTxs = storage.listTransactions({ startDate: startLastMonth, endDate: endLastMonth, excludeBusiness: true });
+    // ISO week: Monday-Sunday
+    const fmtISO = (d: Date) => d.toISOString().slice(0, 10);
+    const startOfISOWeek = (d: Date) => {
+      const x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+      const day = x.getDay(); // 0=Sun..6=Sat
+      const diff = day === 0 ? -6 : 1 - day; // shift to Monday
+      x.setDate(x.getDate() + diff);
+      return x;
+    };
+    const endOfISOWeek = (d: Date) => {
+      const s = startOfISOWeek(d);
+      const e = new Date(s);
+      e.setDate(e.getDate() + 6);
+      return e;
+    };
 
-    const totalSpentMonth = monthTxs.filter((t) => t.amount < 0).reduce((s, t) => s + Math.abs(t.amount), 0);
-    const totalSpentLastMonth = lastMonthTxs.filter((t) => t.amount < 0).reduce((s, t) => s + Math.abs(t.amount), 0);
+    let startCur: string, endCur: string, startPrev: string, endPrev: string;
+    let dayOfPeriod: number, daysInPeriod: number, periodLabel: string, prevLabel: string;
 
-    // Spending by category (excluding business)
+    if (period === "week") {
+      const ws = startOfISOWeek(today);
+      const we = endOfISOWeek(today);
+      startCur = fmtISO(ws); endCur = fmtISO(we);
+      const pwStart = new Date(ws); pwStart.setDate(pwStart.getDate() - 7);
+      const pwEnd = new Date(ws); pwEnd.setDate(pwEnd.getDate() - 1);
+      startPrev = fmtISO(pwStart); endPrev = fmtISO(pwEnd);
+      daysInPeriod = 7;
+      // dayOfPeriod = days elapsed including today (1..7)
+      const elapsed = Math.floor((today.getTime() - ws.getTime()) / 86400000) + 1;
+      dayOfPeriod = Math.max(1, Math.min(7, elapsed));
+      periodLabel = "this week";
+      prevLabel = "last week";
+    } else if (period === "year") {
+      startCur = fmtISO(new Date(today.getFullYear(), 0, 1));
+      endCur = fmtISO(new Date(today.getFullYear(), 11, 31));
+      startPrev = fmtISO(new Date(today.getFullYear() - 1, 0, 1));
+      endPrev = fmtISO(new Date(today.getFullYear() - 1, 11, 31));
+      const isLeap = (y: number) => (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+      daysInPeriod = isLeap(today.getFullYear()) ? 366 : 365;
+      const startMs = new Date(today.getFullYear(), 0, 1).getTime();
+      dayOfPeriod = Math.floor((today.getTime() - startMs) / 86400000) + 1;
+      periodLabel = `${today.getFullYear()} YTD`;
+      prevLabel = `${today.getFullYear() - 1}`;
+    } else {
+      // month
+      startCur = fmtISO(new Date(today.getFullYear(), today.getMonth(), 1));
+      endCur = fmtISO(new Date(today.getFullYear(), today.getMonth() + 1, 0));
+      startPrev = fmtISO(new Date(today.getFullYear(), today.getMonth() - 1, 1));
+      endPrev = fmtISO(new Date(today.getFullYear(), today.getMonth(), 0));
+      daysInPeriod = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
+      dayOfPeriod = today.getDate();
+      periodLabel = today.toLocaleString("en-US", { month: "long" });
+      prevLabel = new Date(today.getFullYear(), today.getMonth() - 1, 1).toLocaleString("en-US", { month: "long" });
+    }
+
+    const monthTxs = storage.listTransactions({ startDate: startCur, endDate: endCur, excludeBusiness: true });
+    const lastMonthTxs = storage.listTransactions({ startDate: startPrev, endDate: endPrev, excludeBusiness: true });
+
+    // Income/expense classification: isIncome flag wins, fall back to amount sign.
     const cats = storage.listCategories();
     const catMap = new Map(cats.map((c) => [c.id, c]));
+    const isIncomeTx = (t: { categoryId: number | null; amount: number }) => {
+      if (t.categoryId != null) {
+        const c = catMap.get(t.categoryId);
+        if (c) return c.isIncome;
+      }
+      return t.amount > 0;
+    };
+    const sumIncome = (arr: typeof monthTxs) => arr.filter(isIncomeTx).reduce((s, t) => s + Math.abs(t.amount), 0);
+    const sumExpense = (arr: typeof monthTxs) => arr.filter((t) => !isIncomeTx(t)).reduce((s, t) => s + Math.abs(t.amount), 0);
+
+    const incomeMonth = sumIncome(monthTxs);
+    const expensesMonth = sumExpense(monthTxs);
+    const netMonth = incomeMonth - expensesMonth;
+
+    const incomeLastMonth = sumIncome(lastMonthTxs);
+    const expensesLastMonth = sumExpense(lastMonthTxs);
+    const netLastMonth = incomeLastMonth - expensesLastMonth;
+
+    // Back-compat fields used elsewhere
+    const totalSpentMonth = expensesMonth;
+    const totalSpentLastMonth = expensesLastMonth;
+
+    // Pace projection: (current net / days elapsed) * days in period
+    const projectedNet = dayOfPeriod > 0 ? Math.round((netMonth / dayOfPeriod) * daysInPeriod) : netMonth;
+
+    // Spending by category (excluding business and income)
     const catTotals = new Map<number | null, number>();
     monthTxs.forEach((t) => {
-      if (t.amount >= 0) return;
+      if (isIncomeTx(t)) return;
       const k = t.categoryId;
       catTotals.set(k, (catTotals.get(k) || 0) + Math.abs(t.amount));
     });
@@ -355,7 +441,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const allBills = storage.listBills();
     const upcomingBills = allBills.filter((b) => b.nextDueDate <= in14.toISOString().slice(0, 10));
 
-    // Business expenses owed (this month + all-time)
+    // Business expenses paid this period (informational)
+    const businessTxsPeriod = storage.listTransactions({ startDate: startCur, endDate: endCur, isBusinessExpense: true });
+    const businessPaidPeriod = businessTxsPeriod.reduce((s, t) => s + Math.abs(t.amount), 0);
+
+    // Business expenses owed (all-time, current outstanding)
     const businesses = storage.listBusinesses();
     const businessTxs = storage.listTransactions({ isBusinessExpense: true });
     const owedTxs = businessTxs.filter((t) => !t.reimbursedAt);
@@ -372,8 +462,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
     res.json({
       accounts,
+      period,
+      periodLabel,
+      prevLabel,
+      startCur,
+      endCur,
       totalSpentMonth,
       totalSpentLastMonth,
+      incomeMonth,
+      expensesMonth,
+      netMonth,
+      incomeLastMonth,
+      expensesLastMonth,
+      netLastMonth,
+      projectedNet,
+      daysInMonth: daysInPeriod,
+      dayOfMonth: dayOfPeriod,
+      businessPaidPeriod,
       breakdown: breakdown.slice(0, 20),
       recent,
       upcomingBills,

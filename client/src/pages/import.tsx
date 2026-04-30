@@ -6,7 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { Account, Category, ImportBatch } from "@shared/schema";
-import { Upload, FileText, ArrowRight, ArrowLeft, CheckCircle2, Trash2 } from "lucide-react";
+import { Upload, FileText, ArrowRight, ArrowLeft, CheckCircle2, Trash2, AlertTriangle } from "lucide-react";
 import { Money } from "@/components/Money";
 import { formatDate, formatDateShort } from "@/lib/format";
 import { useToast } from "@/hooks/use-toast";
@@ -17,6 +17,7 @@ interface PreviewRow {
   date: string;
   description: string;
   amount: number;
+  rawAmount?: string;
   externalId: string;
   isDuplicate: boolean;
   categoryId: number | null;
@@ -24,6 +25,10 @@ interface PreviewRow {
   businessId?: number | null;
   skip?: boolean;
 }
+
+// Sanity-check thresholds for the preview screen (values in cents).
+const HUGE_AMOUNT_CENTS = 10_000_000;   // $100,000 — trigger banner
+const LARGE_AMOUNT_CENTS = 1_000_000;   // $10,000  — show raw value subscript
 
 export default function ImportPage() {
   const [step, setStep] = useState<Step>("account");
@@ -223,7 +228,7 @@ function StepUpload({ accountId, onBack, onParsed }: { accountId: number; onBack
     setParsing(true);
     try {
       const text = await file.text();
-      const res = await apiRequest("POST", "/api/import/parse", { content: text });
+      const res = await apiRequest("POST", "/api/import/parse", { content: text, accountId });
       const data = await res.json();
       onParsed({ filename: file.name, content: text, headers: data.headers, suggested: data.suggested });
     } catch (e: any) {
@@ -324,6 +329,7 @@ function StepMap({ headers, columnMap, setColumnMap, onBack, onPreview }: any) {
 }
 
 function StepPreview({ rows, setRows, categories, stats, onBack, onCommit }: any) {
+  const hasHuge = rows.some((r: PreviewRow) => Math.abs(r.amount) > HUGE_AMOUNT_CENTS);
   return (
     <Card>
       <div className="px-5 py-4 border-b border-card-border flex items-center justify-between">
@@ -332,6 +338,12 @@ function StepPreview({ rows, setRows, categories, stats, onBack, onCommit }: any
           <p className="text-[12px] text-muted-foreground">{stats.newCount} new · {stats.duplicateCount} duplicates skipped</p>
         </div>
       </div>
+      {hasHuge && (
+        <div className="px-5 py-3 border-b border-card-border bg-yellow-500/10 text-yellow-900 dark:text-yellow-200 flex items-start gap-2 text-[12px]" data-testid="warning-huge-amount">
+          <AlertTriangle className="h-4 w-4 flex-shrink-0 mt-0.5" />
+          <div>Some amounts look unusually large — double-check the column mapping is correct. Go back to the previous step if the wrong column was picked as the amount.</div>
+        </div>
+      )}
       <div className="max-h-[480px] overflow-auto">
         <table className="w-full text-[13px]">
           <thead className="bg-muted/40 sticky top-0">
@@ -365,7 +377,14 @@ function StepPreview({ rows, setRows, categories, stats, onBack, onCommit }: any
                     ))}
                   </select>
                 </td>
-                <td className="px-3 py-1.5 text-right"><Money cents={r.amount} colored size="sm" /></td>
+                <td className="px-3 py-1.5 text-right">
+                  <Money cents={r.amount} colored size="sm" />
+                  {Math.abs(r.amount) > LARGE_AMOUNT_CENTS && r.rawAmount && (
+                    <div className="text-[10px] text-muted-foreground font-mono" data-testid={`raw-amount-${i}`}>
+                      from: {r.rawAmount}
+                    </div>
+                  )}
+                </td>
                 <td className="px-3 py-1.5 text-[11px]">{r.isDuplicate ? <span className="text-muted-foreground">Dup</span> : <span className="text-success">New</span>}</td>
               </tr>
             ))}

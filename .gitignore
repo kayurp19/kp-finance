@@ -14,3 +14,7 @@ data.db-journal
 
 *.log
 .DS_Store
+
+# Test CSVs and import samples — never commit user financial data
+*.csv
+!seed-sample.csv

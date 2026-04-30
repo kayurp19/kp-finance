@@ -72,14 +72,29 @@ export function normalizeDate(input: string): string {
   return s;
 }
 
+/**
+ * Parse a currency-like string into integer cents.
+ *
+ * Handles:
+ *   "208.75"      → 20875
+ *   "1,234.56"    → 123456
+ *   "-208.75"     → -20875
+ *   "(208.75)"    → -20875   (accountant-style negatives)
+ *   "$1,234.56"   → 123456
+ *   "$ 1,234.56 " → 123456
+ *   ""            → 0
+ *   "abc"         → 0
+ */
 export function parseAmount(input: string): number {
-  if (!input) return 0;
-  let s = input.trim();
+  if (input == null) return 0;
+  let s = String(input).trim();
+  if (!s) return 0;
   let negative = false;
   if (s.startsWith("(") && s.endsWith(")")) {
     negative = true;
     s = s.slice(1, -1);
   }
+  // Strip currency symbols, thousands separators, spaces; keep digits, dot, minus.
   s = s.replace(/[$,\s]/g, "").replace(/[^0-9.\-]/g, "");
   const n = parseFloat(s);
   if (isNaN(n)) return 0;
