@@ -264,6 +264,10 @@ function StepUpload({ accountId, onBack, onParsed }: { accountId: number; onBack
 
 function StepMap({ headers, columnMap, setColumnMap, onBack, onPreview }: any) {
   const [mode, setMode] = useState<"single" | "split">(columnMap?.amountCol ? "single" : "split");
+  // Validation: in single mode require amountCol; in split mode require at least one of debit/credit.
+  const singleValid = !!columnMap?.amountCol;
+  const splitValid = !!(columnMap?.debitCol || columnMap?.creditCol);
+  const canPreview = mode === "single" ? singleValid : splitValid;
   return (
     <Card className="p-6">
       <p className="text-[13px] text-muted-foreground mb-4">Confirm which columns map to date, description, and amount.</p>
@@ -286,9 +290,12 @@ function StepMap({ headers, columnMap, setColumnMap, onBack, onPreview }: any) {
       <div className="mb-4">
         <Label>Amount format</Label>
         <div className="flex gap-2 mt-1.5">
-          <Button variant={mode === "single" ? "default" : "outline"} size="sm" onClick={() => { setMode("single"); setColumnMap({ ...columnMap, debitCol: undefined, creditCol: undefined }); }}>Single signed column</Button>
-          <Button variant={mode === "split" ? "default" : "outline"} size="sm" onClick={() => { setMode("split"); setColumnMap({ ...columnMap, amountCol: undefined }); }}>Separate Debit / Credit</Button>
+          <Button variant={mode === "single" ? "default" : "outline"} size="sm" onClick={() => { setMode("single"); setColumnMap({ ...columnMap, debitCol: undefined, creditCol: undefined }); }} data-testid="button-mode-single">Single Amount column</Button>
+          <Button variant={mode === "split" ? "default" : "outline"} size="sm" onClick={() => { setMode("split"); setColumnMap({ ...columnMap, amountCol: undefined }); }} data-testid="button-mode-split">Separate Debit / Credit columns</Button>
         </div>
+        <p className="text-[11px] text-muted-foreground mt-1.5">
+          Most credit cards (Amex, Chase, etc.) use a <strong>Single Amount</strong> column. Use Separate only if your CSV has two columns for money-out and money-in.
+        </p>
       </div>
       {mode === "single" ? (
         <div>
@@ -320,9 +327,19 @@ function StepMap({ headers, columnMap, setColumnMap, onBack, onPreview }: any) {
           </div>
         </div>
       )}
+      {!canPreview && (
+        <div className="mt-4 px-3 py-2 rounded bg-yellow-500/10 text-yellow-900 dark:text-yellow-200 text-[12px] flex items-start gap-2" data-testid="warning-no-amount-col">
+          <AlertTriangle className="h-4 w-4 flex-shrink-0 mt-0.5" />
+          <div>
+            {mode === "single"
+              ? "Pick which column contains the amount, or switch to Separate Debit / Credit if your CSV has two columns."
+              : "Pick at least one of Debit or Credit columns, or switch back to Single Amount if your CSV has only one column for amounts."}
+          </div>
+        </div>
+      )}
       <div className="flex justify-between mt-6">
         <Button variant="outline" onClick={onBack}><ArrowLeft className="h-4 w-4 mr-1" />Back</Button>
-        <Button onClick={onPreview} data-testid="button-import-preview">Preview<ArrowRight className="h-4 w-4 ml-1" /></Button>
+        <Button onClick={onPreview} disabled={!canPreview} data-testid="button-import-preview">Preview<ArrowRight className="h-4 w-4 ml-1" /></Button>
       </div>
     </Card>
   );
@@ -330,6 +347,7 @@ function StepMap({ headers, columnMap, setColumnMap, onBack, onPreview }: any) {
 
 function StepPreview({ rows, setRows, categories, stats, onBack, onCommit }: any) {
   const hasHuge = rows.some((r: PreviewRow) => Math.abs(r.amount) > HUGE_AMOUNT_CENTS);
+  const allZero = rows.length > 0 && rows.every((r: PreviewRow) => r.amount === 0);
   return (
     <Card>
       <div className="px-5 py-4 border-b border-card-border flex items-center justify-between">
@@ -344,10 +362,18 @@ function StepPreview({ rows, setRows, categories, stats, onBack, onCommit }: any
           <div>Some amounts look unusually large — double-check the column mapping is correct. Go back to the previous step if the wrong column was picked as the amount.</div>
         </div>
       )}
+      {allZero && (
+        <div className="px-5 py-3 border-b border-card-border bg-destructive/10 text-destructive flex items-start gap-2 text-[12px]" data-testid="warning-all-zero">
+          <AlertTriangle className="h-4 w-4 flex-shrink-0 mt-0.5" />
+          <div>
+            Every amount is $0.00 — the wrong column was picked. Click <strong>Back</strong> and choose the column that contains the dollar amount (usually called "Amount").
+          </div>
+        </div>
+      )}
       <div className="max-h-[480px] overflow-auto">
         <table className="w-full text-[13px]">
-          <thead className="bg-muted/40 sticky top-0">
-            <tr className="text-left text-[10px] uppercase tracking-wide text-muted-foreground">
+          <thead className="sticky top-0 z-10 bg-card border-b border-card-border">
+            <tr className="text-left text-[10px] uppercase tracking-wide text-muted-foreground bg-card">
               <th className="px-3 py-2 w-20">Date</th>
               <th className="px-3 py-2">Description</th>
               <th className="px-3 py-2 w-44">Category</th>
@@ -393,7 +419,7 @@ function StepPreview({ rows, setRows, categories, stats, onBack, onCommit }: any
       </div>
       <div className="px-5 py-3 border-t border-card-border flex justify-between">
         <Button variant="outline" onClick={onBack}><ArrowLeft className="h-4 w-4 mr-1" />Back</Button>
-        <Button onClick={onCommit} disabled={!stats.newCount} data-testid="button-import-commit">Import {stats.newCount} transaction{stats.newCount === 1 ? "" : "s"}</Button>
+        <Button onClick={onCommit} disabled={!stats.newCount || allZero} data-testid="button-import-commit">Import {stats.newCount} transaction{stats.newCount === 1 ? "" : "s"}</Button>
       </div>
     </Card>
   );

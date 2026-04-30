@@ -10,6 +10,7 @@ import { TransactionRow } from "@/components/TransactionRow";
 import type { Transaction, Account, Category, Business } from "@shared/schema";
 import { Briefcase, Download, Search, X } from "lucide-react";
 import { formatCents, todayISO } from "@/lib/format";
+import { cn } from "@/lib/utils";
 
 export default function TransactionsPage() {
   // Read query params from hash (after the path)
@@ -91,6 +92,7 @@ export default function TransactionsPage() {
       </div>
 
       <Card className="p-3 mb-4">
+        <DatePresetRow startDate={startDate} endDate={endDate} onPick={(s, e) => { setStartDate(s); setEndDate(e); }} />
         <div className="grid grid-cols-2 lg:grid-cols-6 gap-2">
           <div className="col-span-2 lg:col-span-2 relative">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
@@ -120,8 +122,9 @@ export default function TransactionsPage() {
               {businesses.filter((b) => !b.archived).map((b) => <SelectItem key={b.id} value={`b:${b.id}`}>{b.name}</SelectItem>)}
             </SelectContent>
           </Select>
-          <div className="flex gap-1">
+          <div className="col-span-2 lg:col-span-1 grid grid-cols-2 gap-1">
             <Input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} placeholder="From" data-testid="input-start-date" />
+            <Input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} placeholder="To" data-testid="input-end-date" />
           </div>
         </div>
         {hasFilters && (
@@ -154,6 +157,80 @@ export default function TransactionsPage() {
           </div>
         )}
       </Card>
+    </div>
+  );
+}
+
+function DatePresetRow({
+  startDate, endDate, onPick,
+}: { startDate: string; endDate: string; onPick: (s: string, e: string) => void }) {
+  const today = new Date();
+  const fmt = (d: Date) => d.toISOString().slice(0, 10);
+  const startOfWeek = (d: Date) => {
+    const x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    const day = x.getDay();
+    const diff = day === 0 ? -6 : 1 - day;
+    x.setDate(x.getDate() + diff);
+    return x;
+  };
+
+  const presets: { key: string; label: string; range: () => [string, string] }[] = [
+    { key: "week", label: "This Week", range: () => {
+      const ws = startOfWeek(today);
+      const we = new Date(ws); we.setDate(we.getDate() + 6);
+      return [fmt(ws), fmt(we)];
+    }},
+    { key: "month", label: "This Month", range: () => {
+      const s = new Date(today.getFullYear(), today.getMonth(), 1);
+      const e = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+      return [fmt(s), fmt(e)];
+    }},
+    { key: "last_month", label: "Last Month", range: () => {
+      const s = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+      const e = new Date(today.getFullYear(), today.getMonth(), 0);
+      return [fmt(s), fmt(e)];
+    }},
+    { key: "year", label: "This Year", range: () => {
+      const s = new Date(today.getFullYear(), 0, 1);
+      return [fmt(s), fmt(today)];
+    }},
+    { key: "all", label: "All Time", range: () => ["", ""] },
+  ];
+
+  // Determine which preset (if any) currently matches
+  const activeKey = (() => {
+    for (const p of presets) {
+      const [s, e] = p.range();
+      if (s === startDate && e === endDate) return p.key;
+    }
+    if (startDate || endDate) return "custom";
+    return "all";
+  })();
+
+  return (
+    <div className="flex items-center gap-1.5 mb-2 flex-wrap" data-testid="transactions-presets">
+      <span className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium mr-1">Range</span>
+      {presets.map((p) => {
+        const isActive = activeKey === p.key;
+        return (
+          <button
+            key={p.key}
+            onClick={() => { const [s, e] = p.range(); onPick(s, e); }}
+            data-testid={`preset-${p.key}`}
+            className={cn(
+              "text-[11px] font-medium px-2.5 py-1 rounded-md transition-colors",
+              isActive
+                ? "bg-primary/10 text-primary"
+                : "text-muted-foreground hover:text-foreground hover:bg-muted",
+            )}
+          >
+            {p.label}
+          </button>
+        );
+      })}
+      {activeKey === "custom" && (
+        <span className="text-[11px] font-medium px-2.5 py-1 rounded-md bg-muted text-foreground">Custom</span>
+      )}
     </div>
   );
 }

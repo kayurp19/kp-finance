@@ -1,17 +1,36 @@
 import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
 import { Link } from "wouter";
 import { Money } from "@/components/Money";
-import { formatDate, formatDateShort, daysBetween, todayISO } from "@/lib/format";
+import { formatDateShort, daysBetween, todayISO } from "@/lib/format";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { ArrowUpRight, ArrowDownRight, Briefcase, AlertCircle, Plus, Sparkles, FileQuestion } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { ArrowUpRight, ArrowDownRight, Briefcase, AlertCircle, Plus, Sparkles, FileQuestion, TrendingUp, TrendingDown } from "lucide-react";
 import type { Account, Bill, Transaction } from "@shared/schema";
+
+type Period = "week" | "month" | "year";
 
 interface DashboardData {
   accounts: Account[];
+  period: Period;
+  periodLabel: string;
+  prevLabel: string;
+  startCur: string;
+  endCur: string;
   totalSpentMonth: number;
   totalSpentLastMonth: number;
+  incomeMonth: number;
+  expensesMonth: number;
+  netMonth: number;
+  incomeLastMonth: number;
+  expensesLastMonth: number;
+  netLastMonth: number;
+  projectedNet: number;
+  daysInMonth: number;
+  dayOfMonth: number;
+  businessPaidPeriod: number;
   breakdown: Array<{ categoryId: number | null; categoryName: string; color: string; amount: number }>;
   recent: Transaction[];
   upcomingBills: Bill[];
@@ -22,9 +41,10 @@ interface DashboardData {
 }
 
 export default function DashboardPage() {
-  const { data, isLoading } = useQuery<DashboardData>({ queryKey: ["/api/dashboard"] });
+  const [period, setPeriod] = useState<Period>("month");
+  const { data, isLoading } = useQuery<DashboardData>({ queryKey: ["/api/dashboard", { period }] });
 
-  if (isLoading) return <DashboardSkeleton />;
+  if (isLoading && !data) return <DashboardSkeleton />;
   if (!data) return null;
 
   // Empty-state onboarding
@@ -32,11 +52,11 @@ export default function DashboardPage() {
     return <EmptyOnboarding />;
   }
 
-  const delta = data.totalSpentMonth - data.totalSpentLastMonth;
+  const netDelta = data.netMonth - data.netLastMonth;
   const monthName = new Date().toLocaleString("en-US", { month: "long" });
-  const lastMonthName = new Date(new Date().getFullYear(), new Date().getMonth() - 1, 1).toLocaleString("en-US", { month: "long" });
   const maxBreakdown = data.breakdown[0]?.amount || 1;
   const top5 = data.breakdown.slice(0, 5);
+  const projectionLabel = period === "week" ? "week" : period === "year" ? "year" : "month";
 
   return (
     <div className="px-6 md:px-10 py-8 space-y-7 max-w-7xl">
@@ -45,43 +65,107 @@ export default function DashboardPage() {
           <h1 className="text-xl font-semibold">Dashboard</h1>
           <p className="text-[13px] text-muted-foreground mt-0.5">{monthName} {new Date().getFullYear()}</p>
         </div>
-        {data.uncategorizedCount > 0 && (
-          <Link href="/transactions?uncategorized=1">
-            <a className="inline-flex items-center gap-2 text-[13px] px-3 py-1.5 rounded-md bg-warning/10 text-warning hover-elevate" data-testid="link-uncategorized">
-              <FileQuestion className="h-3.5 w-3.5" />
-              {data.uncategorizedCount} transaction{data.uncategorizedCount === 1 ? "" : "s"} need a category
-            </a>
-          </Link>
-        )}
+        <div className="flex items-center gap-3">
+          <PeriodToggle value={period} onChange={setPeriod} />
+          {data.uncategorizedCount > 0 && (
+            <Link href="/transactions?uncategorized=1">
+              <a className="inline-flex items-center gap-2 text-[13px] px-3 py-1.5 rounded-md bg-warning/10 text-warning hover-elevate" data-testid="link-uncategorized">
+                <FileQuestion className="h-3.5 w-3.5" />
+                {data.uncategorizedCount} need a category
+              </a>
+            </Link>
+          )}
+        </div>
       </header>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        {/* Headline: Total spent this month */}
-        <Card className="lg:col-span-2 p-6">
-          <div className="text-[12px] uppercase tracking-wide text-muted-foreground font-medium">Total spent this month</div>
-          <div className="text-[11px] text-muted-foreground/80 mt-0.5">Personal expenses · business excluded</div>
-          <div className="mt-3">
-            <Money cents={-data.totalSpentMonth} size="3xl" abs className="font-semibold" />
+      {/* Hero: Net this period — Income / Expenses / Net */}
+      <Card className="p-6">
+        <div className="flex items-center justify-between mb-5">
+          <div>
+            <div className="text-[12px] uppercase tracking-wide text-muted-foreground font-medium">Net {data.periodLabel}</div>
+            <div className="text-[11px] text-muted-foreground/80 mt-0.5">Personal · business excluded</div>
           </div>
-          <div className="mt-2 flex items-center gap-1.5 text-[13px]">
-            {delta === 0 ? (
-              <span className="text-muted-foreground">Same as {lastMonthName}</span>
-            ) : delta > 0 ? (
-              <>
-                <ArrowUpRight className="h-3.5 w-3.5 text-destructive" />
-                <span className="text-destructive">
-                  <Money cents={delta} abs size="sm" /> more than {lastMonthName}
-                </span>
-              </>
-            ) : (
-              <>
-                <ArrowDownRight className="h-3.5 w-3.5 text-success" />
-                <span className="text-success">
-                  <Money cents={delta} abs size="sm" /> less than {lastMonthName}
-                </span>
-              </>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6">
+          <HeroStat
+            label="Income"
+            cents={data.incomeMonth}
+            tone="success"
+            testid="stat-income"
+          />
+          <HeroStat
+            label="Expenses"
+            cents={data.expensesMonth}
+            tone="destructive"
+            testid="stat-expenses"
+          />
+          <div data-testid="stat-net">
+            <div className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">Net</div>
+            <div className="mt-1.5 flex items-baseline gap-2">
+              <Money
+                cents={data.netMonth}
+                size="3xl"
+                className={cn("font-semibold", data.netMonth >= 0 ? "text-success" : "text-destructive")}
+              />
+            </div>
+            {data.businessOwedTotal > 0 && (
+              <div className="text-[11px] text-muted-foreground mt-1">
+                + <Money cents={data.businessOwedTotal} abs size="xs" className="text-warning font-medium" /> owed back from businesses
+              </div>
             )}
           </div>
+        </div>
+
+        {/* vs previous period */}
+        <div className="mt-5 pt-4 border-t border-border/60 flex items-center gap-2 text-[13px]">
+          <span className="text-muted-foreground">vs. {data.prevLabel}:</span>
+          <span className="text-foreground/90">net was <Money cents={data.netLastMonth} colored size="sm" className="font-medium" /></span>
+          {netDelta !== 0 && (
+            <span className={cn("inline-flex items-center gap-1", netDelta > 0 ? "text-success" : "text-destructive")}>
+              {netDelta > 0 ? <ArrowUpRight className="h-3.5 w-3.5" /> : <ArrowDownRight className="h-3.5 w-3.5" />}
+              {netDelta > 0 ? "up " : "down "}<Money cents={netDelta} abs size="sm" />
+            </span>
+          )}
+        </div>
+      </Card>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {/* Where it went */}
+        <Card className="lg:col-span-2 p-6">
+          <div className="flex items-center justify-between mb-5">
+            <div>
+              <h2 className="text-[15px] font-semibold">Where it went</h2>
+              <p className="text-[12px] text-muted-foreground">Top categories {data.periodLabel}</p>
+            </div>
+          </div>
+          {top5.length === 0 ? (
+            <p className="text-[13px] text-muted-foreground italic py-4">No expenses {data.periodLabel} yet.</p>
+          ) : (
+            <div className="space-y-3">
+              {top5.map((b) => {
+                const pct = (b.amount / maxBreakdown) * 100;
+                const totalPct = data.expensesMonth > 0 ? Math.round((b.amount / data.expensesMonth) * 100) : 0;
+                return (
+                  <div key={String(b.categoryId)} data-testid={`row-category-${b.categoryId}`}>
+                    <div className="flex items-center justify-between text-[13px] mb-1.5">
+                      <div className="flex items-center gap-2">
+                        <div className="h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: b.color }} />
+                        <span className="font-medium">{b.categoryName}</span>
+                        <span className="text-muted-foreground text-[11px]">{totalPct}%</span>
+                      </div>
+                      <Money cents={b.amount} abs size="sm" />
+                    </div>
+                    <div className="h-1.5 bg-muted rounded-full overflow-hidden">
+                      <div
+                        className="h-full rounded-full transition-all"
+                        style={{ width: `${pct}%`, backgroundColor: b.color }}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </Card>
 
         {/* Business owed */}
@@ -97,6 +181,11 @@ export default function DashboardPage() {
           <div className="mt-3">
             <Money cents={data.businessOwedTotal} size="2xl" className="font-semibold text-warning" />
           </div>
+          {data.businessPaidPeriod > 0 && (
+            <div className="text-[11px] text-muted-foreground mt-1">
+              <Money cents={data.businessPaidPeriod} abs size="xs" className="font-medium" /> paid {data.periodLabel}
+            </div>
+          )}
           <div className="mt-3 space-y-1">
             {data.businessSummary.filter(b => b.owedAmount > 0).slice(0, 4).map((b) => (
               <Link key={b.businessId} href={`/transactions?businessId=${b.businessId}`}>
@@ -122,46 +211,8 @@ export default function DashboardPage() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        {/* Where it went */}
-        <Card className="lg:col-span-2 p-6">
-          <div className="flex items-center justify-between mb-5">
-            <div>
-              <h2 className="text-[15px] font-semibold">Where it went</h2>
-              <p className="text-[12px] text-muted-foreground">Top categories this month</p>
-            </div>
-          </div>
-          {top5.length === 0 ? (
-            <p className="text-[13px] text-muted-foreground italic py-4">No expenses this month yet.</p>
-          ) : (
-            <div className="space-y-3">
-              {top5.map((b) => {
-                const pct = (b.amount / maxBreakdown) * 100;
-                const totalPct = data.totalSpentMonth > 0 ? Math.round((b.amount / data.totalSpentMonth) * 100) : 0;
-                return (
-                  <div key={String(b.categoryId)} data-testid={`row-category-${b.categoryId}`}>
-                    <div className="flex items-center justify-between text-[13px] mb-1.5">
-                      <div className="flex items-center gap-2">
-                        <div className="h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: b.color }} />
-                        <span className="font-medium">{b.categoryName}</span>
-                        <span className="text-muted-foreground text-[11px]">{totalPct}%</span>
-                      </div>
-                      <Money cents={b.amount} abs size="sm" />
-                    </div>
-                    <div className="h-1.5 bg-muted rounded-full overflow-hidden">
-                      <div
-                        className="h-full rounded-full transition-all"
-                        style={{ width: `${pct}%`, backgroundColor: b.color }}
-                      />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </Card>
-
         {/* Account balances */}
-        <Card className="p-6">
+        <Card className="p-6 lg:col-span-1">
           <h2 className="text-[15px] font-semibold mb-4">Accounts</h2>
           <div className="space-y-2.5">
             {data.accounts.map((a) => (
@@ -177,9 +228,7 @@ export default function DashboardPage() {
             ))}
           </div>
         </Card>
-      </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {/* Upcoming bills */}
         <Card className="p-6">
           <div className="flex items-center justify-between mb-4">
@@ -218,7 +267,7 @@ export default function DashboardPage() {
             <p className="text-[13px] text-muted-foreground italic">No transactions yet.</p>
           ) : (
             <div className="space-y-2">
-              {data.recent.map((t) => (
+              {data.recent.slice(0, 5).map((t) => (
                 <div key={t.id} className="flex items-center justify-between text-[13px] py-1.5 border-b border-border/50 last:border-0">
                   <div className="min-w-0">
                     <div className="font-medium truncate">{t.description}</div>
@@ -231,6 +280,68 @@ export default function DashboardPage() {
           )}
         </Card>
       </div>
+
+      {/* Net Worth Trajectory hint */}
+      <Card className="p-4 bg-muted/30 border-dashed">
+        <div className="flex items-start gap-3 text-[13px]">
+          {data.projectedNet >= 0 ? (
+            <TrendingUp className="h-4 w-4 text-success shrink-0 mt-0.5" />
+          ) : (
+            <TrendingDown className="h-4 w-4 text-destructive shrink-0 mt-0.5" />
+          )}
+          <div>
+            <span className="text-muted-foreground">If this {projectionLabel}'s pace continues, you'll end the {projectionLabel} at </span>
+            <Money
+              cents={data.projectedNet}
+              colored
+              size="sm"
+              className="font-semibold"
+            />
+            <span className="text-muted-foreground"> · {data.dayOfMonth} of {data.daysInMonth} days elapsed</span>
+          </div>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function HeroStat({ label, cents, tone, testid }: { label: string; cents: number; tone: "success" | "destructive"; testid: string }) {
+  const toneClass = tone === "success" ? "text-success" : "text-destructive";
+  return (
+    <div data-testid={testid}>
+      <div className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">{label}</div>
+      <div className="mt-1.5">
+        <Money cents={cents} abs size="2xl" className={cn("font-semibold", toneClass)} />
+      </div>
+    </div>
+  );
+}
+
+function PeriodToggle({ value, onChange }: { value: Period; onChange: (v: Period) => void }) {
+  const opts: { v: Period; label: string }[] = [
+    { v: "week", label: "Week" },
+    { v: "month", label: "Month" },
+    { v: "year", label: "Year" },
+  ];
+  return (
+    <div className="inline-flex items-center bg-muted rounded-md p-0.5" role="tablist" data-testid="period-toggle">
+      {opts.map((o) => (
+        <button
+          key={o.v}
+          role="tab"
+          aria-selected={value === o.v}
+          onClick={() => onChange(o.v)}
+          data-testid={`period-${o.v}`}
+          className={cn(
+            "text-[12px] font-medium px-3 py-1 rounded transition-colors",
+            value === o.v
+              ? "bg-card text-foreground shadow-sm"
+              : "text-muted-foreground hover:text-foreground"
+          )}
+        >
+          {o.label}
+        </button>
+      ))}
     </div>
   );
 }
@@ -238,7 +349,6 @@ export default function DashboardPage() {
 function AccountBalanceLabel({ account }: { account: Account }) {
   const isCC = account.type === "credit_card";
   if (isCC) {
-    // For credit cards: negative balance means money owed. Show as positive owed.
     const owed = Math.abs(Math.min(0, account.currentBalance));
     return (
       <div className="text-right">
@@ -288,10 +398,7 @@ function DashboardSkeleton() {
   return (
     <div className="px-6 md:px-10 py-8 space-y-6 max-w-7xl">
       <Skeleton className="h-7 w-40" />
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <Skeleton className="h-32 lg:col-span-2" />
-        <Skeleton className="h-32" />
-      </div>
+      <Skeleton className="h-40" />
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <Skeleton className="h-64 lg:col-span-2" />
         <Skeleton className="h-64" />
