@@ -413,7 +413,7 @@ export default function PfsPage() {
 
         {/* ---------------- Profile ---------------- */}
         <Section title="Borrower Information">
-          <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-[13px]">
+          <div className="grid grid-cols-1 md:grid-cols-2 print:grid-cols-2 gap-x-6 gap-y-2 text-[13px]">
             <ProfileField label="Full Name" value={data.profile.name} onChange={(v) => patchData({ profile: { ...data.profile, name: v } })} testId="pfs-profile-name" />
             <ProfileField label="Date of Birth" value={data.profile.dob} onChange={(v) => patchData({ profile: { ...data.profile, dob: v } })} placeholder="YYYY-MM-DD" testId="pfs-profile-dob" />
             <ProfileField label="Address" value={data.profile.address} onChange={(v) => patchData({ profile: { ...data.profile, address: v } })} testId="pfs-profile-address" />
@@ -428,7 +428,7 @@ export default function PfsPage() {
         </Section>
 
         {/* ---------------- Two-column Assets / Liabilities ---------------- */}
-        <div className="grid grid-cols-2 gap-6 mt-6 print:gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 print:grid-cols-2 gap-6 mt-6 print:gap-4">
           {/* ASSETS */}
           <div>
             <h2 className="text-[14pt] font-bold border-b-2 border-foreground pb-1 mb-3">Assets</h2>
@@ -471,7 +471,7 @@ export default function PfsPage() {
         </div>
 
         {/* ---------------- Income & Expenses ---------------- */}
-        <div className="grid grid-cols-2 gap-6 mt-8 print:gap-4 print:mt-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 print:grid-cols-2 gap-6 mt-8 print:gap-4 print:mt-6">
           <div>
             <h2 className="text-[14pt] font-bold border-b-2 border-foreground pb-1 mb-3">Annual Income</h2>
             <SectionList
@@ -502,7 +502,7 @@ export default function PfsPage() {
 
         {/* ---------------- Contingent Liabilities ---------------- */}
         <Section title="Contingent Liabilities">
-          <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-[13px]">
+          <div className="grid grid-cols-1 md:grid-cols-2 print:grid-cols-2 gap-x-6 gap-y-2 text-[13px]">
             <ContingentField label="As Endorser or Co-Maker" cents={data.contingent.asEndorser} onChange={(c) => patchData({ contingent: { ...data.contingent, asEndorser: c } })} />
             <ContingentField label="Legal Claims & Judgments" cents={data.contingent.legalClaims} onChange={(c) => patchData({ contingent: { ...data.contingent, legalClaims: c } })} />
             <ContingentField label="Past-Due Taxes" cents={data.contingent.pastDueTaxes} onChange={(c) => patchData({ contingent: { ...data.contingent, pastDueTaxes: c } })} />
@@ -511,7 +511,7 @@ export default function PfsPage() {
         </Section>
 
         {/* ---------------- Signature ---------------- */}
-        <div className="mt-10 print:mt-8 grid grid-cols-2 gap-6 text-[12px]">
+        <div className="mt-10 print:mt-8 grid grid-cols-1 md:grid-cols-2 print:grid-cols-2 gap-6 text-[12px]">
           <div>
             <div className="border-t border-foreground pt-1">Signature</div>
           </div>
