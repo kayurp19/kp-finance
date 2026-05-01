@@ -418,34 +418,64 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     });
   });
 
-  // Reclassify credit-card payments. Finds positive-amount transactions on credit cards
-  // whose description matches a payment pattern, and tags them as Transfers so they
-  // stop appearing as inflated income on the dashboard.
+  // Reclassify credit-card payments and refunds so they stop inflating dashboard income.
+  // Description-driven, conservative: only retags things that LOOK like payments or
+  // refunds, not arbitrary positive CC amounts (a positive on a CC could be a refund,
+  // a points credit, or a real payment — all are non-income, but we want notes to be
+  // accurate).
   app.post("/api/cleanup/reclassify-payments", (_req, res) => {
     const cats = storage.listCategories();
     const transfersCat = cats.find((c) => c.name === "Transfers");
+    const refundsCat = cats.find((c) => c.name === "Refunds");
     if (!transfersCat) return res.status(500).json({ message: "Transfers category missing" });
     const allAccounts = storage.listAccounts();
     const ccIds = new Set(allAccounts.filter((a) => a.type === "credit_card").map((a) => a.id));
     const all = storage.listTransactions({});
-    const re = /payment\s*thank\s*you|mobile\s*payment|autopay|internet\s*trf\s*to\s*cca|online\s*payment|online\s*transfer|electronic\s*payment|web\s*pmt|web\s*payment|ach\s*payment/i;
-    const candidates = all.filter((t) => {
-      // Already tagged as transfer? skip.
-      if (t.categoryId === transfersCat.id) return false;
-      // Positive amount on a credit card = payment coming IN to pay it off.
-      if (ccIds.has(t.accountId) && t.amount > 0) return true;
-      // Description match on any account (e.g. "Internet TRF to CCA 9352" on a checking acct).
-      if (re.test(t.description || "")) return true;
-      return false;
-    });
-    const ids = candidates.map((c) => c.id);
-    if (ids.length) {
-      storage.bulkUpdateTransactions(ids, {
+    const paymentRe = /payment\s*thank\s*you|payment\s*received|mobile\s*payment|autopay|internet\s*trf\s*to\s*cca|online\s*payment|online\s*transfer|electronic\s*payment|web\s*pmt|web\s*payment|ach\s*payment|internet\s*payment|payment\s*-\s*thank\s*you/i;
+    const refundRe = /\brefund|credit$|\bcredit\b.*(adjustment|reward|points)|points\s*credit|cash\s*back|reward\s*credit|adjustment.{0,40}credit/i;
+    type Bucket = "payment" | "refund";
+    const updates: { id: number; bucket: Bucket; tx: any }[] = [];
+    for (const t of all) {
+      if (t.categoryId === transfersCat.id) continue;
+      const desc = t.description || "";
+      if (paymentRe.test(desc)) {
+        updates.push({ id: t.id, bucket: "payment", tx: t });
+      } else if (ccIds.has(t.accountId) && t.amount > 0 && refundRe.test(desc)) {
+        updates.push({ id: t.id, bucket: "refund", tx: t });
+      }
+    }
+    const paymentIds = updates.filter((u) => u.bucket === "payment").map((u) => u.id);
+    const refundIds = updates.filter((u) => u.bucket === "refund").map((u) => u.id);
+    if (paymentIds.length) {
+      storage.bulkUpdateTransactions(paymentIds, {
         categoryId: transfersCat.id,
-        notes: "Reclassified as card payment (was being counted as income)",
+        notes: "Reclassified as card payment (was inflating income)",
       });
     }
-    res.json({ reclassified: ids.length, sample: candidates.slice(0, 5).map((c) => ({ id: c.id, date: c.date, description: c.description, amount: c.amount })) });
+    if (refundIds.length && refundsCat) {
+      storage.bulkUpdateTransactions(refundIds, {
+        categoryId: refundsCat.id,
+        notes: "Reclassified as refund/credit",
+      });
+    }
+    res.json({
+      reclassified: paymentIds.length + refundIds.length,
+      payments: paymentIds.length,
+      refunds: refundIds.length,
+      sample: updates.slice(0, 5).map((u) => ({ id: u.id, bucket: u.bucket, date: u.tx.date, description: u.tx.description, amount: u.tx.amount })),
+    });
+  });
+
+  // Undo a previous reclassify by clearing categoryId on transactions whose notes
+  // contain a known reclassify marker. Lets the user back out an over-eager retag.
+  app.post("/api/cleanup/undo-reclassify", (_req, res) => {
+    const all = storage.listTransactions({});
+    const marker = /Reclassified as (card payment|refund\/credit)/i;
+    const ids = all.filter((t) => t.notes && marker.test(t.notes)).map((t) => t.id);
+    if (ids.length) {
+      storage.bulkUpdateTransactions(ids, { categoryId: null, notes: null });
+    }
+    res.json({ reverted: ids.length });
   });
 
   // Bulk-assign business transactions to a business. Body: { ids: number[], businessId: number }
@@ -655,16 +685,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // so they don't double-count or inflate income.
     const cats = storage.listCategories();
     const catMap = new Map(cats.map((c) => [c.id, c]));
-    const acctTypeMap = new Map(accounts.map((a) => [a.id, a.type]));
     const transfersCat = cats.find((c) => c.name === "Transfers");
     const isTransferTx = (t: { categoryId: number | null; amount: number; accountId: number; description: string }) => {
       if (transfersCat && t.categoryId === transfersCat.id) return true;
-      // Heuristic: positive amounts on a credit card are payments coming in to pay off
-      // the card — never income, regardless of whether they were tagged as Transfers.
-      if (acctTypeMap.get(t.accountId) === "credit_card" && t.amount > 0) return true;
-      // Description-based catch for payments / autopay.
+      // Description-based catch for payments / autopay even when uncategorized.
+      // We DO NOT blanket-treat positive amounts on credit cards as transfers —
+      // those can also be refunds (which are not income but also not transfers).
       const d = (t.description || "").toLowerCase();
-      if (/payment\s*thank\s*you|mobile\s*payment|autopay|internet\s*trf\s*to\s*cca|online\s*payment|online\s*transfer/.test(d)) return true;
+      if (/payment\s*thank\s*you|payment\s*received|mobile\s*payment|autopay|internet\s*trf\s*to\s*cca|online\s*payment|online\s*transfer|internet\s*payment/.test(d)) return true;
       return false;
     };
     const isIncomeTx = (t: { categoryId: number | null; amount: number; accountId: number; description: string }) => {
