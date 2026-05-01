@@ -18,3 +18,4 @@ data.db-journal
 # Test CSVs and import samples — never commit user financial data
 *.csv
 !seed-sample.csv
+!server/seed-data/*.csv
