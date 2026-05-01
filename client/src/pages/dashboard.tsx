@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Link } from "wouter";
 import { Money } from "@/components/Money";
@@ -7,7 +7,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { ArrowUpRight, ArrowDownRight, Briefcase, AlertCircle, Plus, Sparkles, FileQuestion, TrendingUp, TrendingDown } from "lucide-react";
+import { ArrowUpRight, ArrowDownRight, Briefcase, AlertCircle, Plus, Sparkles, FileQuestion, TrendingUp, TrendingDown, Zap, CheckCircle2, Loader2 } from "lucide-react";
+import { apiRequest } from "@/lib/queryClient";
+import { useToast } from "@/hooks/use-toast";
 import type { Account, Bill, Transaction } from "@shared/schema";
 
 type Period = "week" | "month" | "year";
@@ -360,20 +362,103 @@ function AccountBalanceLabel({ account }: { account: Account }) {
   return <Money cents={account.currentBalance} colored={account.currentBalance < 0} size="sm" className="font-medium" />;
 }
 
+interface YtdResult {
+  accountsCreated: number;
+  transactionsImported: number;
+  transactionsCategorized: number;
+  transfersTagged: number;
+  perAccount: Array<{ name: string; transactions: number; inflow: number; outflow: number }>;
+  warnings: string[];
+}
+
 function EmptyOnboarding() {
+  const { toast } = useToast();
+  const qc = useQueryClient();
+  const [result, setResult] = useState<YtdResult | null>(null);
+
+  const ytdMutation = useMutation<YtdResult>({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/setup/ytd", {});
+      return res.json();
+    },
+    onSuccess: (data) => {
+      setResult(data);
+      qc.invalidateQueries();
+      toast({ title: "YTD setup complete", description: `${data.transactionsImported} transactions imported across ${data.accountsCreated} accounts.` });
+    },
+    onError: (e: any) => {
+      toast({ title: "Setup failed", description: e.message, variant: "destructive" });
+    },
+  });
+
+  if (result) {
+    return (
+      <div className="px-6 md:px-10 py-12 max-w-3xl mx-auto">
+        <div className="flex items-center gap-2 mb-2">
+          <CheckCircle2 className="h-5 w-5 text-success" />
+          <h1 className="text-xl font-semibold">YTD setup complete</h1>
+        </div>
+        <p className="text-muted-foreground text-[14px] mb-6">
+          {result.transactionsImported} transactions imported across {result.accountsCreated} accounts. {result.transactionsCategorized} auto-categorized. {result.transfersTagged} inter-account transfers detected.
+        </p>
+        <Card className="p-4 mb-6">
+          <div className="text-[12px] uppercase tracking-wide text-muted-foreground font-medium mb-3">Per account</div>
+          <div className="space-y-2">
+            {result.perAccount.map((a) => (
+              <div key={a.name} className="flex justify-between text-[13px]">
+                <span className="font-medium">{a.name}</span>
+                <span className="text-muted-foreground">
+                  {a.transactions} txns &middot; <span className="text-success">+${a.inflow.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span> / <span className="text-destructive">${a.outflow.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                </span>
+              </div>
+            ))}
+          </div>
+        </Card>
+        <Button onClick={() => window.location.reload()} data-testid="button-reload-after-ytd">Open dashboard</Button>
+      </div>
+    );
+  }
+
   return (
     <div className="px-6 md:px-10 py-12 max-w-3xl mx-auto">
       <div className="flex items-center gap-2 mb-2">
         <Sparkles className="h-5 w-5 text-primary" />
         <h1 className="text-xl font-semibold">Welcome to KP Finance</h1>
       </div>
-      <p className="text-muted-foreground text-[14px] mb-8">Three steps to know where your money's going.</p>
+      <p className="text-muted-foreground text-[14px] mb-6">Get organized in one click.</p>
+
+      <Card className="p-5 mb-6 border-primary/30 bg-primary/[0.03]">
+        <div className="flex items-start gap-3">
+          <div className="h-9 w-9 rounded-full bg-primary/10 text-primary flex items-center justify-center shrink-0">
+            <Zap className="h-4 w-4" />
+          </div>
+          <div className="flex-1">
+            <div className="font-medium text-[14px]">Set up my 2026 YTD</div>
+            <div className="text-[13px] text-muted-foreground mt-1 mb-4">
+              Imports all your statements in one shot: Chase, KeyBank, Amex, TD, Discover, Citi, NBT, plus Roth IRA and mortgage. ~547 transactions across 11 accounts. Auto-categorized. Inter-account transfers flagged. One-time only.
+            </div>
+            <Button
+              onClick={() => ytdMutation.mutate()}
+              disabled={ytdMutation.isPending}
+              data-testid="button-setup-ytd"
+            >
+              {ytdMutation.isPending ? (
+                <><Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" />Importing&hellip;</>
+              ) : (
+                <>Run YTD setup</>
+              )}
+            </Button>
+          </div>
+        </div>
+      </Card>
+
+      <p className="text-[12px] text-muted-foreground mb-3">Or set up manually:</p>
       <ol className="space-y-3">
         <Step n={1} title="Add your accounts" desc="Checking, savings, credit cards. We'll track balances.">
-          <Link href="/accounts"><Button data-testid="button-onboard-accounts" size="sm"><Plus className="h-3.5 w-3.5 mr-1" />Add account</Button></Link>
+          <Link href="/accounts"><Button data-testid="button-onboard-accounts" size="sm" variant="outline"><Plus className="h-3.5 w-3.5 mr-1" />Add account</Button></Link>
         </Step>
-        <Step n={2} title="Import a statement" desc="Drop a CSV from your bank. We'll auto-categorize what we can.">
-          <Link href="/import"><Button data-testid="button-onboard-import" size="sm" variant="outline">Import CSV</Button></Link>
+        <Step n={2} title="Import a statement" desc="Drop a CSV or PDF from your bank. We'll auto-categorize what we can.">
+          <Link href="/import"><Button data-testid="button-onboard-import" size="sm" variant="outline">Import file</Button></Link>
         </Step>
         <Step n={3} title="Reconcile and review" desc="Tag what's personal vs business. Confirm balances match your statements." />
       </ol>

@@ -14,6 +14,7 @@ import {
 import type { Transaction } from "@shared/schema";
 import { applyColumnMap, makeExternalId, parseCsv } from "./csv";
 import { pdfToCsv } from "./pdf-import";
+import { runYtdSetup } from "./ytd-setup";
 
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
   app.use(cookieParser());
@@ -259,6 +260,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // ===== Import =====
   // PDF -> CSV: client uploads a base64-encoded PDF, server converts to CSV text
   // and returns it. The client then proceeds through the normal CSV pipeline.
+  // One-time YTD bulk-import. Idempotent: refuses if DB already populated.
+  app.post("/api/setup/ytd", async (_req, res) => {
+    try {
+      const result = await runYtdSetup();
+      res.json(result);
+    } catch (e: any) {
+      res.status(400).json({ message: e?.message || "YTD setup failed" });
+    }
+  });
+
   app.post("/api/import/parse-pdf", async (req, res) => {
     try {
       const { dataBase64 } = req.body || {};
