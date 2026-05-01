@@ -9,6 +9,7 @@ import {
 import {
   insertAccountSchema, insertCategorySchema, insertTransactionSchema,
   insertCategoryRuleSchema, insertBillSchema, insertBusinessSchema,
+  insertPfsVersionSchema,
 } from "@shared/schema";
 import type { Transaction } from "@shared/schema";
 import { applyColumnMap, makeExternalId, parseCsv } from "./csv";
@@ -130,8 +131,26 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(storage.createTransaction(parsed.data));
   });
   app.patch("/api/transactions/:id", (req, res) => {
-    const updated = storage.updateTransaction(Number(req.params.id), req.body);
+    const { autoLearn, ...patch } = req.body || {};
+    const updated = storage.updateTransaction(Number(req.params.id), patch);
     if (!updated) return res.status(404).json({ message: "Not found" });
+    // Auto-learn: when the user picks a category, create a rule for similar future transactions.
+    if (autoLearn && patch.categoryId && updated.description) {
+      const token = storage.extractMerchantToken(updated.description);
+      if (token) {
+        const existing = storage.listRules().find(
+          (r) => r.matchType === "contains" && r.matchValue.toLowerCase() === token,
+        );
+        if (!existing) {
+          storage.createRule({
+            matchType: "contains",
+            matchValue: token,
+            categoryId: patch.categoryId,
+            priority: 10,
+          } as any);
+        }
+      }
+    }
     res.json(updated);
   });
   app.delete("/api/transactions/:id", (req, res) => {
@@ -265,8 +284,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const previewRows = parsed.map((r, i) => {
       const externalId = externalIds[i];
       const isDuplicate = existing.has(externalId);
-      const categoryId = storage.applyRules(r.description, null);
-      return { ...r, externalId, isDuplicate, categoryId };
+      const { categoryId, cleanMerchant } = storage.applyRules(r.description, null);
+      return { ...r, externalId, isDuplicate, categoryId, merchant: cleanMerchant };
     });
     res.json({
       rows: previewRows,
@@ -289,7 +308,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         date: r.date,
         amount: Number(r.amount),
         description: r.description,
-        merchant: null,
+        merchant: r.merchant || null,
         categoryId: r.categoryId ?? null,
         entity: "Personal",
         isBusinessExpense: !!r.isBusinessExpense,
@@ -490,6 +509,97 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       },
       uncategorizedCount,
     });
+  });
+
+  // ===== Personal Financial Statement (PFS / SBA Form 413) =====
+  app.get("/api/pfs", (_req, res) => {
+    // Auto-derive cash & liabilities from accounts; auto-derive income/expense from last 12 months tx.
+    const accts = storage.listAccounts();
+    const cash = accts.filter((a) => ["checking", "savings", "cash"].includes(a.type) && !a.archived);
+    const investments = accts.filter((a) => a.type === "investment" && !a.archived);
+    const creditCards = accts.filter((a) => a.type === "credit_card" && !a.archived);
+    const loans = accts.filter((a) => a.type === "loan" && !a.archived);
+
+    // 12-month income/expense rollup from transactions
+    const today = new Date();
+    const oneYearAgo = new Date(today); oneYearAgo.setFullYear(today.getFullYear() - 1);
+    const startISO = oneYearAgo.toISOString().slice(0, 10);
+    const endISO = today.toISOString().slice(0, 10);
+    const tx = storage.listTransactions({ startDate: startISO, endDate: endISO });
+    const cats = storage.listCategories();
+    const catById = new Map(cats.map((c) => [c.id, c]));
+    let totalIncome = 0;
+    let totalExpenses = 0;
+    const expenseByCat = new Map<string, number>();
+    for (const t of tx) {
+      if (t.amount > 0) totalIncome += t.amount;
+      else {
+        totalExpenses += Math.abs(t.amount);
+        const name = t.categoryId ? (catById.get(t.categoryId)?.name || "Other") : "Uncategorized";
+        expenseByCat.set(name, (expenseByCat.get(name) || 0) + Math.abs(t.amount));
+      }
+    }
+
+    res.json({
+      generatedAt: new Date().toISOString(),
+      periodStart: startISO,
+      periodEnd: endISO,
+      derived: {
+        cash: cash.map((a) => ({ id: a.id, name: a.name, institution: a.institution, balance: a.currentBalance })),
+        cashTotal: cash.reduce((s, a) => s + a.currentBalance, 0),
+        investments: investments.map((a) => ({ id: a.id, name: a.name, institution: a.institution, balance: a.currentBalance })),
+        investmentsTotal: investments.reduce((s, a) => s + a.currentBalance, 0),
+        creditCards: creditCards.map((a) => ({ id: a.id, name: a.name, institution: a.institution, balance: Math.abs(a.currentBalance), creditLimit: a.creditLimit })),
+        creditCardsTotal: creditCards.reduce((s, a) => s + Math.abs(a.currentBalance), 0),
+        loans: loans.map((a) => ({ id: a.id, name: a.name, institution: a.institution, balance: Math.abs(a.currentBalance) })),
+        loansTotal: loans.reduce((s, a) => s + Math.abs(a.currentBalance), 0),
+        annualIncome: totalIncome,
+        annualExpenses: totalExpenses,
+        expenseByCategory: Array.from(expenseByCat.entries())
+          .map(([name, amount]) => ({ name, amount }))
+          .sort((a, b) => b.amount - a.amount),
+      },
+    });
+  });
+
+  // PFS Versions — named, editable snapshots
+  app.get("/api/pfs/versions", (_req, res) => {
+    // Return without the heavy `data` blob in the list view
+    const list = storage.listPfsVersions().map((v) => ({
+      id: v.id, name: v.name, asOfDate: v.asOfDate, createdAt: v.createdAt, updatedAt: v.updatedAt,
+    }));
+    res.json(list);
+  });
+  app.get("/api/pfs/versions/:id", (req, res) => {
+    const v = storage.getPfsVersion(Number(req.params.id));
+    if (!v) return res.status(404).json({ message: "Not found" });
+    res.json({ ...v, data: JSON.parse(v.data) });
+  });
+  app.post("/api/pfs/versions", (req, res) => {
+    const body = req.body || {};
+    if (!body.name || !body.asOfDate || !body.data) {
+      return res.status(400).json({ message: "name, asOfDate, data required" });
+    }
+    const created = storage.createPfsVersion({
+      name: String(body.name),
+      asOfDate: String(body.asOfDate),
+      data: typeof body.data === "string" ? body.data : JSON.stringify(body.data),
+    });
+    res.json({ ...created, data: JSON.parse(created.data) });
+  });
+  app.patch("/api/pfs/versions/:id", (req, res) => {
+    const body = req.body || {};
+    const patch: any = {};
+    if (body.name) patch.name = String(body.name);
+    if (body.asOfDate) patch.asOfDate = String(body.asOfDate);
+    if (body.data !== undefined) patch.data = typeof body.data === "string" ? body.data : JSON.stringify(body.data);
+    const updated = storage.updatePfsVersion(Number(req.params.id), patch);
+    if (!updated) return res.status(404).json({ message: "Not found" });
+    res.json({ ...updated, data: JSON.parse(updated.data) });
+  });
+  app.delete("/api/pfs/versions/:id", (req, res) => {
+    storage.deletePfsVersion(Number(req.params.id));
+    res.json({ ok: true });
   });
 
   return httpServer;

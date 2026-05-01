@@ -111,6 +111,18 @@ export const reimbursementClearings = sqliteTable("reimbursement_clearings", {
   notes: text("notes"),
 });
 
+// Personal Financial Statement versions — each is a named, editable snapshot.
+// `data` holds a complete PFS payload (profile + sections + line items + overrides) as JSON
+// so we can keep many versions (one per lender/scenario) without bloating the schema.
+export const pfsVersions = sqliteTable("pfs_versions", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  name: text("name").notNull(),                  // e.g. "M&T SBA Loan — Apr 2026"
+  asOfDate: text("as_of_date").notNull(),         // ISO yyyy-mm-dd — "as of" date on the statement
+  data: text("data").notNull(),                   // full JSON payload (see PfsData type)
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
 export const insertAccountSchema = createInsertSchema(accounts).omit({ id: true, createdAt: true });
 export const insertCategorySchema = createInsertSchema(categories).omit({ id: true });
 export const insertTransactionSchema = createInsertSchema(transactions).omit({ id: true, createdAt: true });
@@ -120,6 +132,7 @@ export const insertBillPaymentSchema = createInsertSchema(billPayments).omit({ i
 export const insertImportBatchSchema = createInsertSchema(importBatches).omit({ id: true, importedAt: true });
 export const insertBusinessSchema = createInsertSchema(businesses).omit({ id: true });
 export const insertReimbursementClearingSchema = createInsertSchema(reimbursementClearings).omit({ id: true });
+export const insertPfsVersionSchema = createInsertSchema(pfsVersions).omit({ id: true, createdAt: true, updatedAt: true });
 
 export type Account = typeof accounts.$inferSelect;
 export type InsertAccount = z.infer<typeof insertAccountSchema>;
@@ -139,3 +152,5 @@ export type Business = typeof businesses.$inferSelect;
 export type InsertBusiness = z.infer<typeof insertBusinessSchema>;
 export type ReimbursementClearing = typeof reimbursementClearings.$inferSelect;
 export type InsertReimbursementClearing = z.infer<typeof insertReimbursementClearingSchema>;
+export type PfsVersion = typeof pfsVersions.$inferSelect;
+export type InsertPfsVersion = z.infer<typeof insertPfsVersionSchema>;

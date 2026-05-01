@@ -21,6 +21,7 @@ interface PreviewRow {
   externalId: string;
   isDuplicate: boolean;
   categoryId: number | null;
+  merchant?: string | null;
   isBusinessExpense?: boolean;
   businessId?: number | null;
   skip?: boolean;
@@ -348,6 +349,8 @@ function StepMap({ headers, columnMap, setColumnMap, onBack, onPreview }: any) {
 function StepPreview({ rows, setRows, categories, stats, onBack, onCommit }: any) {
   const hasHuge = rows.some((r: PreviewRow) => Math.abs(r.amount) > HUGE_AMOUNT_CENTS);
   const allZero = rows.length > 0 && rows.every((r: PreviewRow) => r.amount === 0);
+  const newRows = rows.filter((r: PreviewRow) => !r.isDuplicate);
+  const autoCount = newRows.filter((r: PreviewRow) => r.categoryId).length;
   return (
     <Card>
       <div className="px-5 py-4 border-b border-card-border flex items-center justify-between">
@@ -370,6 +373,11 @@ function StepPreview({ rows, setRows, categories, stats, onBack, onCommit }: any
           </div>
         </div>
       )}
+      {newRows.length > 0 && !allZero && (
+        <div className="px-5 py-2 border-b border-card-border bg-emerald-500/10 text-emerald-900 dark:text-emerald-200 text-[12px]" data-testid="auto-categorize-summary">
+          Auto-categorized <strong>{autoCount}</strong> of <strong>{newRows.length}</strong> new transactions. Pick categories for the rest below — once you save, similar transactions will auto-fill next time.
+        </div>
+      )}
       <div className="max-h-[480px] overflow-auto">
         <table className="w-full text-[13px]">
           <thead className="sticky top-0 z-10 bg-card border-b border-card-border">
@@ -385,7 +393,10 @@ function StepPreview({ rows, setRows, categories, stats, onBack, onCommit }: any
             {rows.map((r: PreviewRow, i: number) => (
               <tr key={i} className={`border-t border-border ${r.isDuplicate ? "opacity-50" : ""}`} data-testid={`preview-row-${i}`}>
                 <td className="px-3 py-1.5 font-mono text-[11px] text-muted-foreground">{formatDateShort(r.date)}</td>
-                <td className="px-3 py-1.5 truncate max-w-[280px]">{r.description}</td>
+                <td className="px-3 py-1.5 truncate max-w-[280px]">
+                  <div className="truncate">{r.description}</div>
+                  {r.merchant && <div className="text-[10px] text-muted-foreground truncate">{r.merchant}</div>}
+                </td>
                 <td className="px-3 py-1.5">
                   <select
                     className="bg-background border border-border rounded px-1.5 py-1 text-[12px] w-full"

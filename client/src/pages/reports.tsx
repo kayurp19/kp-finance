@@ -5,6 +5,9 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Money } from "@/components/Money";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import { Link } from "wouter";
+import { FileText } from "lucide-react";
 import type { Transaction, Category } from "@shared/schema";
 import {
   PieChart, Pie, Cell, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip,
@@ -89,6 +92,11 @@ export default function ReportsPage() {
           <p className="text-[13px] text-muted-foreground mt-0.5">Personal · business excluded · {label}</p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
+          <Link href="/pfs">
+            <Button size="sm" variant="outline" data-testid="button-open-pfs">
+              <FileText className="h-4 w-4 mr-1.5" />Personal Financial Statement
+            </Button>
+          </Link>
           <PeriodToggle value={mode} onChange={setMode} />
           {mode === "custom" && (
             <div className="flex items-center gap-1.5">

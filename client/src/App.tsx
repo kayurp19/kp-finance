@@ -19,6 +19,7 @@ import BillsPage from "@/pages/bills";
 import BusinessesPage from "@/pages/businesses";
 import CategoriesPage from "@/pages/categories";
 import ReportsPage from "@/pages/reports";
+import PfsPage from "@/pages/pfs";
 import SettingsPage from "@/pages/settings";
 import NotFound from "@/pages/not-found";
 
@@ -61,6 +62,7 @@ function ProtectedRouter() {
         <Route path="/businesses" component={BusinessesPage} />
         <Route path="/categories" component={CategoriesPage} />
         <Route path="/reports" component={ReportsPage} />
+        <Route path="/pfs" component={PfsPage} />
         <Route path="/settings" component={SettingsPage} />
         <Route component={NotFound} />
       </Switch>

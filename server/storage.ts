@@ -1,7 +1,7 @@
 import {
   accounts, categories, transactions, categoryRules,
   bills, billPayments, importBatches, settings,
-  businesses, reimbursementClearings,
+  businesses, reimbursementClearings, pfsVersions,
   type Account, type InsertAccount,
   type Category, type InsertCategory,
   type Transaction, type InsertTransaction,
@@ -11,12 +11,29 @@ import {
   type ImportBatch, type InsertImportBatch,
   type Business, type InsertBusiness,
   type ReimbursementClearing, type InsertReimbursementClearing,
+  type PfsVersion, type InsertPfsVersion,
 } from "@shared/schema";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import Database from "better-sqlite3";
 import { eq, and, desc, asc, gte, lte, sql, inArray, isNull } from "drizzle-orm";
 
-const dbPath = process.env.DATABASE_PATH || "data.db";
+// Resolve DB path: prefer explicit DATABASE_PATH, then DATABASE_URL=file:..., else local file.
+function resolveDbPath(): string {
+  const p = process.env.DATABASE_PATH;
+  if (p) return p;
+  const url = process.env.DATABASE_URL;
+  if (url && url.startsWith("file:")) return url.slice("file:".length);
+  return "data.db";
+}
+const dbPath = resolveDbPath();
+// Ensure the parent directory exists (e.g. /data on Railway volume).
+try {
+  const fs = require("fs");
+  const path = require("path");
+  const dir = path.dirname(dbPath);
+  if (dir && dir !== "." && !fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+} catch {}
+console.log(`[db] using SQLite at ${dbPath}`);
 const sqlite = new Database(dbPath);
 sqlite.pragma("journal_mode = WAL");
 export const db = drizzle(sqlite);
@@ -118,6 +135,14 @@ function initSchema() {
       cleared_at TEXT NOT NULL,
       amount INTEGER NOT NULL,
       notes TEXT
+    );
+    CREATE TABLE IF NOT EXISTS pfs_versions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      as_of_date TEXT NOT NULL,
+      data TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_tx_account ON transactions(account_id);
     CREATE INDEX IF NOT EXISTS idx_tx_date ON transactions(date);
@@ -310,16 +335,42 @@ export const storage = {
   deleteRule(id: number) {
     db.delete(categoryRules).where(eq(categoryRules.id, id)).run();
   },
-  // Apply rules to a description; return categoryId or null
-  applyRules(description: string, merchant: string | null): number | null {
+  // Extract a stable merchant token from a description (first 1-2 alphabetic words).
+  // Used for auto-learning: when the user assigns a category, we create a rule on this token.
+  extractMerchantToken(description: string): string | null {
+    if (!description) return null;
+    const cleaned = description
+      .toLowerCase()
+      .replace(/[^a-z0-9\s&]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    const words = cleaned.split(" ").filter((w) => w.length >= 3 && !/^\d+$/.test(w));
+    if (words.length === 0) return null;
+    // Use first 1 or 2 meaningful words
+    return words.slice(0, Math.min(2, words.length)).join(" ");
+  },
+
+  // Apply user-defined rules first, then fall back to the built-in merchant dictionary.
+  // Returns { categoryId, cleanMerchant }.
+  applyRules(description: string, merchant: string | null): { categoryId: number | null; cleanMerchant: string | null } {
     const text = `${description} ${merchant || ""}`.toLowerCase();
+    // 1. User-defined rules take priority
     const rules = this.listRules();
     for (const r of rules) {
       const v = r.matchValue.toLowerCase();
-      if (r.matchType === "contains" && text.includes(v)) return r.categoryId;
-      if (r.matchType === "equals" && text.trim() === v) return r.categoryId;
+      if ((r.matchType === "contains" && text.includes(v)) ||
+          (r.matchType === "equals" && text.trim() === v)) {
+        return { categoryId: r.categoryId, cleanMerchant: null };
+      }
     }
-    return null;
+    // 2. Built-in merchant dictionary
+    const { suggestMerchant } = require("./merchant-rules");
+    const sugg = suggestMerchant(description, merchant);
+    if (sugg.category) {
+      const cat = db.select().from(categories).where(eq(categories.name, sugg.category)).get();
+      if (cat) return { categoryId: cat.id, cleanMerchant: sugg.cleanName };
+    }
+    return { categoryId: null, cleanMerchant: sugg.cleanName };
   },
 
   // ===== Bills =====
@@ -406,6 +457,26 @@ export const storage = {
     return db.insert(reimbursementClearings).values({
       businessId, clearedAt, amount, notes,
     } as any).returning().get();
+  },
+
+  // ===== PFS versions =====
+  listPfsVersions(): PfsVersion[] {
+    return db.select().from(pfsVersions).orderBy(desc(pfsVersions.updatedAt)).all();
+  },
+  getPfsVersion(id: number): PfsVersion | undefined {
+    return db.select().from(pfsVersions).where(eq(pfsVersions.id, id)).get();
+  },
+  createPfsVersion(data: InsertPfsVersion): PfsVersion {
+    const now = new Date().toISOString();
+    return db.insert(pfsVersions).values({ ...data, createdAt: now, updatedAt: now } as any).returning().get();
+  },
+  updatePfsVersion(id: number, data: Partial<InsertPfsVersion>): PfsVersion | undefined {
+    const now = new Date().toISOString();
+    db.update(pfsVersions).set({ ...data, updatedAt: now } as any).where(eq(pfsVersions.id, id)).run();
+    return this.getPfsVersion(id);
+  },
+  deletePfsVersion(id: number) {
+    db.delete(pfsVersions).where(eq(pfsVersions.id, id)).run();
   },
 
   findExistingExternalIds(accountId: number, externalIds: string[]): Set<string> {

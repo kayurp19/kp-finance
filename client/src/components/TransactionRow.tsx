@@ -61,7 +61,7 @@ export function TransactionRow({
         {tx.merchant && <div className="text-[11px] text-muted-foreground">{tx.merchant}</div>}
       </div>
       <div className="col-span-2 hidden md:block">
-        <CategoryBadge tx={tx} categories={categories} onChange={(id) => update.mutate({ categoryId: id })} />
+        <CategoryBadge tx={tx} categories={categories} onChange={(id) => update.mutate({ categoryId: id, autoLearn: true } as any)} />
       </div>
       <div className="col-span-2 hidden md:block">
         <BusinessTag tx={tx} businesses={businesses} onToggle={(b) => update.mutate({ isBusinessExpense: b })} onAssign={(id) => update.mutate({ businessId: id, isBusinessExpense: true })} />
