@@ -24,8 +24,31 @@ export interface ParsedFile {
   suggested: ColumnMap;
 }
 
+/**
+ * Some banks (KeyBank, NBT, Citi, others) prepend metadata lines before the
+ * actual header row — e.g.:
+ *   <blank line>
+ *   241273579,Key Express Checking
+ *   Date,Amount,Description,Ref.#
+ *   ...
+ * Strip everything before the first line that looks like a real header so
+ * Papaparse can parse it normally.
+ */
+function stripPreamble(content: string): string {
+  const lines = content.split(/\r?\n/);
+  // A real header line: contains "date" + at least one of (amount|description|debit|credit|memo)
+  const headerIdx = lines.findIndex((l) => {
+    const lower = l.toLowerCase();
+    if (!lower.includes("date")) return false;
+    return /amount|description|debit|credit|memo|details|posting/.test(lower);
+  });
+  if (headerIdx <= 0) return content; // already starts with header, or none found
+  return lines.slice(headerIdx).join("\n");
+}
+
 export function parseCsv(content: string): ParsedFile {
-  const result = Papa.parse<Record<string, string>>(content.trim(), {
+  const cleaned = stripPreamble(content.trim());
+  const result = Papa.parse<Record<string, string>>(cleaned, {
     header: true,
     skipEmptyLines: true,
     transformHeader: (h) => h.trim(),
