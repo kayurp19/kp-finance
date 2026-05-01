@@ -131,6 +131,8 @@ export default function DashboardPage() {
         </div>
       </Card>
 
+      <QuickFixesPanel />
+
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* Where it went */}
         <Card className="lg:col-span-2 p-6">
@@ -487,6 +489,114 @@ function DashboardSkeleton() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <Skeleton className="h-64 lg:col-span-2" />
         <Skeleton className="h-64" />
+      </div>
+    </div>
+  );
+}
+
+// Quick Fixes panel: surfaces one-click cleanup actions that fix common
+// post-import data-quality issues (CC payments showing as income, blank rows,
+// unassigned business expenses).
+function QuickFixesPanel() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const { data: unassigned } = useQuery<{ count: number; total: number }>({
+    queryKey: ["/api/businesses/unassigned-transactions"],
+  });
+
+  const reclassify = useMutation({
+    mutationFn: async () => {
+      const r = await apiRequest("POST", "/api/cleanup/reclassify-payments", {});
+      return r.json();
+    },
+    onSuccess: (d: any) => {
+      qc.invalidateQueries();
+      toast({
+        title: d.reclassified === 0 ? "Nothing to reclassify" : `Reclassified ${d.reclassified} payments`,
+        description: d.reclassified > 0 ? "Credit-card payments are now tagged as transfers, not income." : "All card payments are already tagged correctly.",
+      });
+    },
+    onError: (e: any) => toast({ title: "Reclassify failed", description: e.message, variant: "destructive" }),
+  });
+
+  const cleanupBlanks = useMutation({
+    mutationFn: async () => {
+      const r = await apiRequest("POST", "/api/cleanup/blank-transactions", {});
+      return r.json();
+    },
+    onSuccess: (d: any) => {
+      qc.invalidateQueries();
+      toast({
+        title: d.deleted === 0 ? "No blank rows found" : `Deleted ${d.deleted} blank rows`,
+      });
+    },
+    onError: (e: any) => toast({ title: "Cleanup failed", description: e.message, variant: "destructive" }),
+  });
+
+  return (
+    <Card className="p-5">
+      <div className="flex items-center justify-between mb-3">
+        <div>
+          <h2 className="text-[14px] font-semibold flex items-center gap-1.5"><Sparkles className="h-3.5 w-3.5 text-primary" /> Quick fixes</h2>
+          <p className="text-[12px] text-muted-foreground mt-0.5">Cleanups that improve dashboard accuracy after a YTD import</p>
+        </div>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <FixRow
+          title="Retag credit-card payments"
+          desc="Stops payment-from-checking entries from inflating income."
+          actionLabel={reclassify.isPending ? "Working…" : "Run"}
+          onAction={() => reclassify.mutate()}
+          pending={reclassify.isPending}
+          testid="button-reclassify-payments"
+        />
+        <FixRow
+          title="Delete blank transactions"
+          desc="Removes $0.00 rows with no description."
+          actionLabel={cleanupBlanks.isPending ? "Working…" : "Run"}
+          onAction={() => cleanupBlanks.mutate()}
+          pending={cleanupBlanks.isPending}
+          testid="button-cleanup-blanks"
+        />
+        <FixRow
+          title={unassigned && unassigned.count > 0 ? `Assign ${unassigned.count} business txns` : "Business txns assigned"}
+          desc={unassigned && unassigned.count > 0 ? `${(unassigned.total / 100).toLocaleString("en-US", { style: "currency", currency: "USD" })} flagged as business but not yet assigned to a hotel/PuroClean.` : "All business expenses are assigned to a business."}
+          actionLabel="Open"
+          href="/businesses/assign"
+          disabled={!unassigned?.count}
+          testid="button-bulk-assign"
+        />
+      </div>
+    </Card>
+  );
+}
+
+function FixRow({
+  title, desc, actionLabel, onAction, href, pending, disabled, testid,
+}: {
+  title: string;
+  desc: string;
+  actionLabel: string;
+  onAction?: () => void;
+  href?: string;
+  pending?: boolean;
+  disabled?: boolean;
+  testid?: string;
+}) {
+  const button = (
+    <Button size="sm" variant="outline" className="shrink-0" onClick={onAction} disabled={disabled || pending} data-testid={testid}>
+      {pending && <Loader2 className="h-3 w-3 mr-1.5 animate-spin" />}
+      {actionLabel}
+    </Button>
+  );
+  return (
+    <div className="rounded-md border border-border p-3 flex flex-col gap-2">
+      <div className="flex-1">
+        <div className="text-[13px] font-medium">{title}</div>
+        <div className="text-[11.5px] text-muted-foreground mt-0.5">{desc}</div>
+      </div>
+      <div className="flex justify-end">
+        {href ? <Link href={href}>{button}</Link> : button}
       </div>
     </div>
   );

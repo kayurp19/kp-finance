@@ -158,6 +158,18 @@ function initSchema() {
     // best-effort migration; will retry next boot
     console.warn("reimbursement_clearings migration warning:", e);
   }
+  // Migration: add opening_balance / opening_balance_date columns to accounts.
+  try {
+    const cols = sqlite.prepare("PRAGMA table_info(accounts)").all() as { name: string }[];
+    if (!cols.some((c) => c.name === "opening_balance")) {
+      sqlite.exec("ALTER TABLE accounts ADD COLUMN opening_balance INTEGER NOT NULL DEFAULT 0;");
+    }
+    if (!cols.some((c) => c.name === "opening_balance_date")) {
+      sqlite.exec("ALTER TABLE accounts ADD COLUMN opening_balance_date TEXT;");
+    }
+  } catch (e) {
+    console.warn("accounts opening-balance migration warning:", e);
+  }
 }
 initSchema();
 
@@ -237,6 +249,10 @@ export const storage = {
   },
   updateAccount(id: number, data: Partial<InsertAccount>): Account | undefined {
     db.update(accounts).set(data as any).where(eq(accounts.id, id)).run();
+    // If opening balance / date changed, recompute the running balance.
+    if ("openingBalance" in data || "openingBalanceDate" in data) {
+      this.recomputeAccountBalance(id);
+    }
     return this.getAccount(id);
   },
   deleteAccount(id: number) {
@@ -331,8 +347,21 @@ export const storage = {
   recomputeAccountBalance(accountId: number) {
     const acct = this.getAccount(accountId);
     if (!acct) return;
-    const sum = sqlite.prepare("SELECT COALESCE(SUM(amount),0) AS s FROM transactions WHERE account_id = ?").get(accountId) as { s: number };
-    db.update(accounts).set({ currentBalance: sum.s }).where(eq(accounts.id, accountId)).run();
+    // If an opening balance + date are set, balance = opening + sum(tx where date > openingBalanceDate).
+    // Otherwise fall back to the raw sum of all transactions (legacy behavior).
+    let sum: { s: number };
+    if (acct.openingBalanceDate) {
+      sum = sqlite.prepare(
+        "SELECT COALESCE(SUM(amount),0) AS s FROM transactions WHERE account_id = ? AND date > ?"
+      ).get(accountId, acct.openingBalanceDate) as { s: number };
+      const balance = (acct.openingBalance || 0) + sum.s;
+      db.update(accounts).set({ currentBalance: balance }).where(eq(accounts.id, accountId)).run();
+    } else {
+      sum = sqlite.prepare(
+        "SELECT COALESCE(SUM(amount),0) AS s FROM transactions WHERE account_id = ?"
+      ).get(accountId) as { s: number };
+      db.update(accounts).set({ currentBalance: sum.s }).where(eq(accounts.id, accountId)).run();
+    }
   },
 
   // ===== Category rules =====

@@ -16,6 +16,10 @@ export const accounts = sqliteTable("accounts", {
   archived: integer("archived", { mode: "boolean" }).notNull().default(false),
   lastReconciledAt: text("last_reconciled_at"),
   lastReconciledBalance: integer("last_reconciled_balance"),
+  // Opening balance lets credit-card balances reflect prior-year carryover instead of
+  // a YTD swing (sum of all imported tx). Computed balance = openingBalance + sum(tx where date > openingBalanceDate).
+  openingBalance: integer("opening_balance").notNull().default(0),
+  openingBalanceDate: text("opening_balance_date"), // ISO yyyy-mm-dd; null = no opening balance (use raw sum)
   createdAt: text("created_at").notNull(),
 });
 

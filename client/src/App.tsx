@@ -17,6 +17,7 @@ import TransactionsPage from "@/pages/transactions";
 import ImportPage from "@/pages/import";
 import BillsPage from "@/pages/bills";
 import BusinessesPage from "@/pages/businesses";
+import BusinessAssignPage from "@/pages/business-assign";
 import CategoriesPage from "@/pages/categories";
 import ReportsPage from "@/pages/reports";
 import PfsPage from "@/pages/pfs";
@@ -60,6 +61,7 @@ function ProtectedRouter() {
         <Route path="/import" component={ImportPage} />
         <Route path="/bills" component={BillsPage} />
         <Route path="/businesses" component={BusinessesPage} />
+        <Route path="/businesses/assign" component={BusinessAssignPage} />
         <Route path="/categories" component={CategoriesPage} />
         <Route path="/reports" component={ReportsPage} />
         <Route path="/pfs" component={PfsPage} />

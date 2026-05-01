@@ -101,12 +101,14 @@ export function AccountFormDialog({ account, onClose }: { account?: Account; onC
     currentBalance: account ? (account.currentBalance / 100).toString() : "0",
     creditLimit: account?.creditLimit ? (account.creditLimit / 100).toString() : "",
     notes: account?.notes ?? "",
+    openingBalance: account ? ((account.openingBalance ?? 0) / 100).toString() : "",
+    openingBalanceDate: account?.openingBalanceDate ?? "",
   });
   const { toast } = useToast();
 
   const save = useMutation({
     mutationFn: async () => {
-      const payload = {
+      const payload: any = {
         name: form.name,
         type: form.type,
         institution: form.institution || null,
@@ -116,6 +118,11 @@ export function AccountFormDialog({ account, onClose }: { account?: Account; onC
         notes: form.notes || null,
         archived: false,
       };
+      // Only send opening-balance fields when the user filled them in (avoid wiping existing values).
+      if (form.openingBalance !== "" || form.openingBalanceDate) {
+        payload.openingBalance = form.openingBalance ? dollarsToCents(form.openingBalance) : 0;
+        payload.openingBalanceDate = form.openingBalanceDate || null;
+      }
       if (isEdit) await apiRequest("PATCH", `/api/accounts/${account!.id}`, payload);
       else await apiRequest("POST", "/api/accounts", payload);
     },
@@ -167,6 +174,22 @@ export function AccountFormDialog({ account, onClose }: { account?: Account; onC
               <Input type="number" step="0.01" value={form.creditLimit} onChange={(e) => setForm({ ...form, creditLimit: e.target.value })} data-testid="input-account-limit" />
             </div>
           )}
+        </div>
+        <div className="rounded-md border border-dashed border-border p-3">
+          <Label className="text-[12px] font-medium">Opening balance (optional)</Label>
+          <p className="text-[11px] text-muted-foreground mt-1 mb-2">
+            Set the balance as of a date in the past so the running balance reflects prior-year carryover, not just imported transactions. Leave blank to use the sum of all imported activity.
+          </p>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label className="text-[11px]">Balance ($)</Label>
+              <Input type="number" step="0.01" value={form.openingBalance} onChange={(e) => setForm({ ...form, openingBalance: e.target.value })} placeholder="-2,450.00 (CC owed)" data-testid="input-account-opening-balance" />
+            </div>
+            <div>
+              <Label className="text-[11px]">As of date</Label>
+              <Input type="date" value={form.openingBalanceDate} onChange={(e) => setForm({ ...form, openingBalanceDate: e.target.value })} placeholder="2025-12-31" data-testid="input-account-opening-date" />
+            </div>
+          </div>
         </div>
       </div>
       <DialogFooter>

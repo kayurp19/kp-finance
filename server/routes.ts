@@ -418,6 +418,70 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     });
   });
 
+  // Reclassify credit-card payments. Finds positive-amount transactions on credit cards
+  // whose description matches a payment pattern, and tags them as Transfers so they
+  // stop appearing as inflated income on the dashboard.
+  app.post("/api/cleanup/reclassify-payments", (_req, res) => {
+    const cats = storage.listCategories();
+    const transfersCat = cats.find((c) => c.name === "Transfers");
+    if (!transfersCat) return res.status(500).json({ message: "Transfers category missing" });
+    const allAccounts = storage.listAccounts();
+    const ccIds = new Set(allAccounts.filter((a) => a.type === "credit_card").map((a) => a.id));
+    const all = storage.listTransactions({});
+    const re = /payment\s*thank\s*you|mobile\s*payment|autopay|internet\s*trf\s*to\s*cca|online\s*payment|online\s*transfer|electronic\s*payment|web\s*pmt|web\s*payment|ach\s*payment/i;
+    const candidates = all.filter((t) => {
+      // Already tagged as transfer? skip.
+      if (t.categoryId === transfersCat.id) return false;
+      // Positive amount on a credit card = payment coming IN to pay it off.
+      if (ccIds.has(t.accountId) && t.amount > 0) return true;
+      // Description match on any account (e.g. "Internet TRF to CCA 9352" on a checking acct).
+      if (re.test(t.description || "")) return true;
+      return false;
+    });
+    const ids = candidates.map((c) => c.id);
+    if (ids.length) {
+      storage.bulkUpdateTransactions(ids, {
+        categoryId: transfersCat.id,
+        notes: "Reclassified as card payment (was being counted as income)",
+      });
+    }
+    res.json({ reclassified: ids.length, sample: candidates.slice(0, 5).map((c) => ({ id: c.id, date: c.date, description: c.description, amount: c.amount })) });
+  });
+
+  // Bulk-assign business transactions to a business. Body: { ids: number[], businessId: number }
+  // Optionally ids can be omitted, in which case we operate on the supplied filter.
+  app.post("/api/businesses/bulk-assign", (req, res) => {
+    const { ids, businessId } = req.body || {};
+    if (!businessId || !Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ message: "businessId and ids[] required" });
+    }
+    storage.bulkUpdateTransactions(ids, { businessId: Number(businessId), isBusinessExpense: true });
+    res.json({ assigned: ids.length, businessId });
+  });
+
+  // List of unassigned business transactions (isBusinessExpense=true, no businessId, not reimbursed).
+  // Powers the bulk-assign UI.
+  app.get("/api/businesses/unassigned-transactions", (_req, res) => {
+    const all = storage.listTransactions({ isBusinessExpense: true });
+    const accounts = storage.listAccounts();
+    const acctMap = new Map(accounts.map((a) => [a.id, a]));
+    const unassigned = all.filter((t) => !t.businessId && !t.reimbursedAt);
+    // Newest first.
+    unassigned.sort((a, b) => (a.date < b.date ? 1 : -1));
+    const items = unassigned.map((t) => ({
+      id: t.id,
+      date: t.date,
+      description: t.description,
+      merchant: t.merchant,
+      amount: t.amount,
+      accountId: t.accountId,
+      accountName: acctMap.get(t.accountId)?.name || "Unknown",
+      categoryId: t.categoryId,
+    }));
+    const total = items.reduce((s, t) => s + Math.abs(t.amount), 0);
+    res.json({ items, count: items.length, total });
+  });
+
   app.post("/api/import/parse-pdf", async (req, res) => {
     try {
       const { dataBase64 } = req.body || {};
@@ -586,17 +650,41 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const lastMonthTxs = storage.listTransactions({ startDate: startPrev, endDate: endPrev, excludeBusiness: true });
 
     // Income/expense classification: isIncome flag wins, fall back to amount sign.
+    // Transfers (and credit-card payments which appear as positive amounts on the CC
+    // account but originate from another tracked account) are EXCLUDED from both sides
+    // so they don't double-count or inflate income.
     const cats = storage.listCategories();
     const catMap = new Map(cats.map((c) => [c.id, c]));
-    const isIncomeTx = (t: { categoryId: number | null; amount: number }) => {
+    const acctTypeMap = new Map(accounts.map((a) => [a.id, a.type]));
+    const transfersCat = cats.find((c) => c.name === "Transfers");
+    const isTransferTx = (t: { categoryId: number | null; amount: number; accountId: number; description: string }) => {
+      if (transfersCat && t.categoryId === transfersCat.id) return true;
+      // Heuristic: positive amounts on a credit card are payments coming in to pay off
+      // the card — never income, regardless of whether they were tagged as Transfers.
+      if (acctTypeMap.get(t.accountId) === "credit_card" && t.amount > 0) return true;
+      // Description-based catch for payments / autopay.
+      const d = (t.description || "").toLowerCase();
+      if (/payment\s*thank\s*you|mobile\s*payment|autopay|internet\s*trf\s*to\s*cca|online\s*payment|online\s*transfer/.test(d)) return true;
+      return false;
+    };
+    const isIncomeTx = (t: { categoryId: number | null; amount: number; accountId: number; description: string }) => {
+      if (isTransferTx(t)) return false;
       if (t.categoryId != null) {
         const c = catMap.get(t.categoryId);
         if (c) return c.isIncome;
       }
       return t.amount > 0;
     };
+    const isExpenseTx = (t: { categoryId: number | null; amount: number; accountId: number; description: string }) => {
+      if (isTransferTx(t)) return false;
+      if (t.categoryId != null) {
+        const c = catMap.get(t.categoryId);
+        if (c) return !c.isIncome;
+      }
+      return t.amount < 0;
+    };
     const sumIncome = (arr: typeof monthTxs) => arr.filter(isIncomeTx).reduce((s, t) => s + Math.abs(t.amount), 0);
-    const sumExpense = (arr: typeof monthTxs) => arr.filter((t) => !isIncomeTx(t)).reduce((s, t) => s + Math.abs(t.amount), 0);
+    const sumExpense = (arr: typeof monthTxs) => arr.filter(isExpenseTx).reduce((s, t) => s + Math.abs(t.amount), 0);
 
     const incomeMonth = sumIncome(monthTxs);
     const expensesMonth = sumExpense(monthTxs);
@@ -613,10 +701,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // Pace projection: (current net / days elapsed) * days in period
     const projectedNet = dayOfPeriod > 0 ? Math.round((netMonth / dayOfPeriod) * daysInPeriod) : netMonth;
 
-    // Spending by category (excluding business and income)
+    // Spending by category (excluding business, income, and transfers)
     const catTotals = new Map<number | null, number>();
     monthTxs.forEach((t) => {
-      if (isIncomeTx(t)) return;
+      if (!isExpenseTx(t)) return;
       const k = t.categoryId;
       catTotals.set(k, (catTotals.get(k) || 0) + Math.abs(t.amount));
     });
