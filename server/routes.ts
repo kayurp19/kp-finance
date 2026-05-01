@@ -13,6 +13,7 @@ import {
 } from "@shared/schema";
 import type { Transaction } from "@shared/schema";
 import { applyColumnMap, makeExternalId, parseCsv } from "./csv";
+import { pdfToCsv } from "./pdf-import";
 
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
   app.use(cookieParser());
@@ -256,6 +257,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // ===== Import =====
+  // PDF -> CSV: client uploads a base64-encoded PDF, server converts to CSV text
+  // and returns it. The client then proceeds through the normal CSV pipeline.
+  app.post("/api/import/parse-pdf", async (req, res) => {
+    try {
+      const { dataBase64 } = req.body || {};
+      if (typeof dataBase64 !== "string" || dataBase64.length === 0) {
+        return res.status(400).json({ message: "dataBase64 required" });
+      }
+      const buf = Buffer.from(dataBase64, "base64");
+      if (buf.length === 0) return res.status(400).json({ message: "empty file" });
+      const csv = await pdfToCsv(buf);
+      res.json({ csv });
+    } catch (e: any) {
+      res.status(400).json({ message: e?.message || "Failed to parse PDF" });
+    }
+  });
+
   app.post("/api/import/parse", (req, res) => {
     const { content, accountId } = req.body || {};
     if (typeof content !== "string") return res.status(400).json({ message: "content required" });

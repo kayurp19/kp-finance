@@ -13,6 +13,18 @@ import { useToast } from "@/hooks/use-toast";
 
 type Step = "account" | "upload" | "map" | "preview" | "done";
 
+// Convert an ArrayBuffer to a base64 string in chunks (avoids stack overflow on
+// large PDFs when using `String.fromCharCode(...new Uint8Array(...))`).
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  const CHUNK = 0x8000;
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + CHUNK)));
+  }
+  return btoa(binary);
+}
+
 interface PreviewRow {
   date: string;
   description: string;
@@ -228,7 +240,19 @@ function StepUpload({ accountId, onBack, onParsed }: { accountId: number; onBack
   const handleFile = async (file: File) => {
     setParsing(true);
     try {
-      const text = await file.text();
+      const isPdf = /\.pdf$/i.test(file.name) || file.type === "application/pdf";
+      let text: string;
+      if (isPdf) {
+        // Send the raw PDF bytes (base64) to the server, which extracts a CSV
+        // we can then run through the normal preview/commit pipeline.
+        const buf = await file.arrayBuffer();
+        const dataBase64 = arrayBufferToBase64(buf);
+        const pdfRes = await apiRequest("POST", "/api/import/parse-pdf", { dataBase64 });
+        const pdfData = await pdfRes.json();
+        text = pdfData.csv;
+      } else {
+        text = await file.text();
+      }
       const res = await apiRequest("POST", "/api/import/parse", { content: text, accountId });
       const data = await res.json();
       onParsed({ filename: file.name, content: text, headers: data.headers, suggested: data.suggested });
@@ -248,13 +272,13 @@ function StepUpload({ accountId, onBack, onParsed }: { accountId: number; onBack
         className={`border-2 border-dashed rounded-xl px-6 py-10 text-center transition-colors ${dragOver ? "border-primary bg-primary/5" : "border-border"}`}
       >
         <FileText className="h-10 w-10 mx-auto text-muted-foreground/60 mb-3" />
-        <div className="font-medium text-[14px]">Drop your CSV here</div>
+        <div className="font-medium text-[14px]">Drop your CSV or PDF here</div>
         <div className="text-[12px] text-muted-foreground mt-1">or</div>
         <Button variant="outline" size="sm" className="mt-3" onClick={() => fileRef.current?.click()} disabled={parsing} data-testid="button-pick-file">
           {parsing ? "Parsing…" : "Choose file"}
         </Button>
-        <input ref={fileRef} type="file" accept=".csv,.txt" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f); }} />
-        <p className="text-[11px] text-muted-foreground mt-4">CSV files from any bank. We'll auto-detect columns.</p>
+        <input ref={fileRef} type="file" accept=".csv,.txt,.pdf,application/pdf" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f); }} />
+        <p className="text-[11px] text-muted-foreground mt-4">CSV or PDF statements from any bank. We'll auto-detect columns.</p>
       </div>
       <div className="flex justify-between mt-4">
         <Button variant="outline" onClick={onBack}><ArrowLeft className="h-4 w-4 mr-1" />Back</Button>
