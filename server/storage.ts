@@ -148,6 +148,16 @@ function initSchema() {
     CREATE INDEX IF NOT EXISTS idx_tx_date ON transactions(date);
     CREATE INDEX IF NOT EXISTS idx_tx_external ON transactions(external_id);
   `);
+  // Migration: add payment_transaction_id column to reimbursement_clearings if missing
+  try {
+    const cols = sqlite.prepare("PRAGMA table_info(reimbursement_clearings)").all() as { name: string }[];
+    if (!cols.some((c) => c.name === "payment_transaction_id")) {
+      sqlite.exec("ALTER TABLE reimbursement_clearings ADD COLUMN payment_transaction_id INTEGER;");
+    }
+  } catch (e) {
+    // best-effort migration; will retry next boot
+    console.warn("reimbursement_clearings migration warning:", e);
+  }
 }
 initSchema();
 
@@ -443,7 +453,13 @@ export const storage = {
     if (businessId) q = q.where(eq(reimbursementClearings.businessId, businessId));
     return q.orderBy(desc(reimbursementClearings.clearedAt)).all();
   },
-  clearReimbursements(businessId: number, clearedAt: string, amount: number, notes: string | null): ReimbursementClearing {
+  clearReimbursements(
+    businessId: number,
+    clearedAt: string,
+    amount: number,
+    notes: string | null,
+    paymentTransactionId: number | null = null,
+  ): ReimbursementClearing {
     // Mark all currently-owed (reimbursedAt IS NULL, isBusinessExpense=true, businessId matches) transactions as reimbursed
     const now = new Date().toISOString();
     db.update(transactions)
@@ -454,8 +470,28 @@ export const storage = {
         isNull(transactions.reimbursedAt),
       ))
       .run();
+    // If the user picked a payment transaction on the personal card that this
+    // reimbursement covers, mark THAT transaction as a business-paid payment so
+    // it doesn't get double-counted as personal income/transfer.
+    if (paymentTransactionId) {
+      const business = db.select().from(businesses).where(eq(businesses.id, businessId)).get();
+      const transfersCat = db.select().from(categories).where(eq(categories.name, "Transfers")).get();
+      const tx = db.select().from(transactions).where(eq(transactions.id, paymentTransactionId)).get();
+      if (tx) {
+        const noteLine = `Paid by ${business?.name || "business"}${notes ? " — " + notes : ""}`;
+        const merged = tx.notes ? `${tx.notes}\n${noteLine}` : noteLine;
+        db.update(transactions).set({
+          // Tag the payment as belonging to the business — but NOT as a business expense
+          // (it's a credit/payment, not an expense). We use the merchant + notes fields
+          // to label it; categoryId goes to Transfers so it nets out in reports.
+          merchant: `Paid by ${business?.name || "business"}`,
+          categoryId: transfersCat?.id ?? tx.categoryId,
+          notes: merged,
+        } as any).where(eq(transactions.id, paymentTransactionId)).run();
+      }
+    }
     return db.insert(reimbursementClearings).values({
-      businessId, clearedAt, amount, notes,
+      businessId, clearedAt, amount, notes, paymentTransactionId,
     } as any).returning().get();
   },
 

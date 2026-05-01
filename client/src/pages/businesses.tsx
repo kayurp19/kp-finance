@@ -114,41 +114,137 @@ export default function BusinessesPage() {
   );
 }
 
+interface PaymentCandidate {
+  id: number;
+  date: string;
+  description: string;
+  amount: number;
+  accountId: number;
+  accountName: string;
+  accountType: string;
+}
+
 function ClearDialog({ row, onClose }: { row: SummaryRow; onClose: () => void }) {
   const [clearedAt, setClearedAt] = useState(todayISO());
   const [amount, setAmount] = useState((row.owedAmount / 100).toFixed(2));
   const [notes, setNotes] = useState("");
+  // null = not selected / manual record. number = id of payment txn on personal card.
+  const [paymentMode, setPaymentMode] = useState<"manual" | "match">("match");
+  const [paymentTransactionId, setPaymentTransactionId] = useState<number | null>(null);
   const { toast } = useToast();
+
+  const { data: candidatesData } = useQuery<{ candidates: PaymentCandidate[] }>({
+    queryKey: ["/api/reimbursements/candidate-payments", { businessId: row.businessId }],
+  });
+  const candidates = candidatesData?.candidates || [];
+
+  // When user picks a candidate, auto-fill date + amount.
+  function pickCandidate(c: PaymentCandidate | null) {
+    if (!c) {
+      setPaymentTransactionId(null);
+      return;
+    }
+    setPaymentTransactionId(c.id);
+    setClearedAt(c.date);
+    setAmount((c.amount / 100).toFixed(2));
+  }
+
   const clear = useMutation({
     mutationFn: async () => {
       await apiRequest("POST", "/api/reimbursements/clear", {
-        businessId: row.businessId, clearedAt, amount: dollarsToCents(amount), notes: notes || null,
+        businessId: row.businessId,
+        clearedAt,
+        amount: dollarsToCents(amount),
+        notes: notes || null,
+        paymentTransactionId: paymentMode === "match" ? paymentTransactionId : null,
       });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/reimbursements/summary"] });
       queryClient.invalidateQueries({ queryKey: ["/api/dashboard"] });
       queryClient.invalidateQueries({ queryKey: ["/api/transactions"] });
-      toast({ title: "Cleared", description: `${row.businessName} reimbursement recorded.` });
+      toast({
+        title: "Cleared",
+        description: paymentMode === "match" && paymentTransactionId
+          ? `${row.businessName} reimbursement matched to payment.`
+          : `${row.businessName} reimbursement recorded.`,
+      });
       onClose();
     },
   });
+
   return (
-    <DialogContent>
+    <DialogContent className="max-w-lg">
       <DialogHeader>
         <DialogTitle>Clear reimbursement from {row.businessName}</DialogTitle>
-        <p className="text-[12px] text-muted-foreground">All currently-owed transactions for this business will be marked reimbursed. This is recorded in your reimbursement history.</p>
+        <p className="text-[12px] text-muted-foreground">All currently-owed transactions for this business will be marked reimbursed.</p>
       </DialogHeader>
-      <div className="space-y-3">
-        <div className="grid grid-cols-2 gap-3">
-          <div><Label>Date received</Label><Input type="date" value={clearedAt} onChange={(e) => setClearedAt(e.target.value)} /></div>
-          <div><Label>Amount ($)</Label><Input type="number" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} /></div>
+
+      <div className="space-y-4">
+        {/* Mode toggle */}
+        <div className="inline-flex rounded-md bg-muted p-0.5 text-[12px]">
+          <button
+            type="button"
+            onClick={() => setPaymentMode("match")}
+            className={`px-3 py-1.5 rounded transition-colors ${paymentMode === "match" ? "bg-background shadow-sm font-medium" : "text-muted-foreground"}`}
+            data-testid="button-mode-match"
+          >Business paid the card</button>
+          <button
+            type="button"
+            onClick={() => setPaymentMode("manual")}
+            className={`px-3 py-1.5 rounded transition-colors ${paymentMode === "manual" ? "bg-background shadow-sm font-medium" : "text-muted-foreground"}`}
+            data-testid="button-mode-manual"
+          >Just record it</button>
         </div>
-        <div><Label>Notes (optional)</Label><Input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Check #, transfer ref, etc." /></div>
+
+        {paymentMode === "match" && (
+          <div>
+            <Label className="text-[12px]">Pick the payment that came from {row.businessName}'s account</Label>
+            <p className="text-[11px] text-muted-foreground mb-2 mt-1">Select the payment/credit transaction on your personal card paid by the business. We'll mark it as a business reimbursement so it doesn't double-count.</p>
+            {candidates.length === 0 ? (
+              <div className="text-[12px] text-muted-foreground italic p-3 border border-dashed rounded">
+                No matching payments found on cards with owed expenses. Either import the relevant statement or use “Just record it”.
+              </div>
+            ) : (
+              <div className="max-h-56 overflow-y-auto border border-card-border rounded divide-y divide-border" data-testid="candidate-list">
+                {candidates.map((c) => {
+                  const selected = paymentTransactionId === c.id;
+                  return (
+                    <button
+                      type="button"
+                      key={c.id}
+                      onClick={() => pickCandidate(c)}
+                      className={`w-full text-left px-3 py-2 grid grid-cols-12 gap-2 items-center text-[12px] hover-elevate ${selected ? "bg-primary/10" : ""}`}
+                      data-testid={`candidate-${c.id}`}
+                    >
+                      <div className="col-span-2 text-muted-foreground tabular-nums">{c.date.slice(5)}</div>
+                      <div className="col-span-6 truncate">{c.description}</div>
+                      <div className="col-span-2 text-muted-foreground truncate">{c.accountName}</div>
+                      <div className="col-span-2 text-right font-mono">${(c.amount / 100).toFixed(2)}</div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="grid grid-cols-2 gap-3">
+          <div><Label className="text-[12px]">Date received</Label><Input type="date" value={clearedAt} onChange={(e) => setClearedAt(e.target.value)} data-testid="input-cleared-at" /></div>
+          <div><Label className="text-[12px]">Amount ($)</Label><Input type="number" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} data-testid="input-cleared-amount" /></div>
+        </div>
+        <div><Label className="text-[12px]">Notes (optional)</Label><Input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Check #, transfer ref, etc." data-testid="input-cleared-notes" /></div>
       </div>
+
       <DialogFooter>
         <Button variant="outline" onClick={onClose}>Cancel</Button>
-        <Button onClick={() => clear.mutate()} disabled={clear.isPending} data-testid="button-confirm-clear">{clear.isPending ? "Saving…" : "Mark cleared"}</Button>
+        <Button
+          onClick={() => clear.mutate()}
+          disabled={clear.isPending || (paymentMode === "match" && candidates.length > 0 && !paymentTransactionId)}
+          data-testid="button-confirm-clear"
+        >
+          {clear.isPending ? "Saving…" : (paymentMode === "match" && paymentTransactionId ? "Match & mark cleared" : "Mark cleared")}
+        </Button>
       </DialogFooter>
     </DialogContent>
   );

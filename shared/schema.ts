@@ -109,6 +109,9 @@ export const reimbursementClearings = sqliteTable("reimbursement_clearings", {
   clearedAt: text("cleared_at").notNull(),
   amount: integer("amount").notNull(),
   notes: text("notes"),
+  // Optional: the personal-card payment transaction that represents this clearing.
+  // When set, that transaction will be recategorized as a business reimbursement.
+  paymentTransactionId: integer("payment_transaction_id"),
 });
 
 // Personal Financial Statement versions — each is a named, editable snapshot.

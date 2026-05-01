@@ -252,9 +252,64 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(storage.listClearings(bid));
   });
   app.post("/api/reimbursements/clear", (req, res) => {
-    const { businessId, clearedAt, amount, notes } = req.body || {};
+    const { businessId, clearedAt, amount, notes, paymentTransactionId } = req.body || {};
     if (!businessId || !clearedAt) return res.status(400).json({ message: "businessId and clearedAt required" });
-    res.json(storage.clearReimbursements(Number(businessId), clearedAt, Number(amount || 0), notes || null));
+    res.json(storage.clearReimbursements(
+      Number(businessId),
+      clearedAt,
+      Number(amount || 0),
+      notes || null,
+      paymentTransactionId ? Number(paymentTransactionId) : null,
+    ));
+  });
+
+  // Candidate payment transactions to clear a business's owed balance.
+  // Returns positive-amount (payment/credit) transactions on credit-card accounts
+  // where the business has owed expenses, sorted newest first. The user picks one.
+  app.get("/api/reimbursements/candidate-payments", (req, res) => {
+    const businessId = req.query.businessId ? Number(req.query.businessId) : null;
+    if (!businessId) return res.status(400).json({ message: "businessId required" });
+    const accounts = storage.listAccounts();
+    const acctMap = new Map(accounts.map((a) => [a.id, a]));
+
+    // Find which accounts have any unreimbursed business txns for this business.
+    const owedTxs = storage.listTransactions({ isBusinessExpense: true })
+      .filter((t) => t.businessId === businessId && !t.reimbursedAt);
+    const accountIdsWithOwed = new Set(owedTxs.map((t) => t.accountId));
+
+    // Candidate payments: positive transactions on those accounts, NOT already
+    // tied to another clearing record, NOT marked as a business expense itself.
+    // Look back 90 days from the most recent owed txn (or today if none).
+    const allClearings = storage.listClearings();
+    const usedPaymentIds = new Set(allClearings.map((c) => (c as any).paymentTransactionId).filter(Boolean));
+
+    const candidates: Array<{
+      id: number; date: string; description: string; amount: number;
+      accountId: number; accountName: string; accountType: string;
+    }> = [];
+    for (const accountId of accountIdsWithOwed) {
+      const acct = acctMap.get(accountId);
+      if (!acct) continue;
+      // Only credit cards typically receive payments-from-business
+      if (acct.type !== "credit_card") continue;
+      const txs = storage.listTransactions({ accountId });
+      for (const t of txs) {
+        if (t.amount <= 0) continue; // payments are POSITIVE on credit-card accounts
+        if (t.isBusinessExpense) continue; // skip txns already marked business expenses
+        if (usedPaymentIds.has(t.id)) continue; // already used to clear something
+        candidates.push({
+          id: t.id,
+          date: t.date,
+          description: t.description,
+          amount: t.amount,
+          accountId: t.accountId,
+          accountName: acct.name,
+          accountType: acct.type,
+        });
+      }
+    }
+    candidates.sort((a, b) => (a.date < b.date ? 1 : -1));
+    res.json({ candidates: candidates.slice(0, 50) });
   });
 
   // ===== Import =====
@@ -268,6 +323,99 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (e: any) {
       res.status(400).json({ message: e?.message || "YTD setup failed" });
     }
+  });
+
+  // Cleanup junk rows that slipped past the importer (blank descriptions OR
+  // zero amounts). Safe to call repeatedly. Returns count deleted.
+  app.post("/api/cleanup/blank-transactions", (_req, res) => {
+    const all = storage.listTransactions({});
+    const junk = all.filter((t) => {
+      const desc = (t.description || "").trim();
+      return !desc || t.amount === 0;
+    });
+    const accountIds = new Set<number>();
+    for (const j of junk) {
+      accountIds.add(j.accountId);
+      storage.deleteTransaction(j.id);
+    }
+    res.json({ deleted: junk.length, accountsAffected: accountIds.size });
+  });
+
+  // Money Leak: aggregate fees and interest charges by account.
+  // Identifies $$ wasted on late fees, finance charges, NSF fees, etc.
+  app.get("/api/reports/money-leak", (req, res) => {
+    const startDate = (req.query.startDate as string) || undefined;
+    const endDate = (req.query.endDate as string) || undefined;
+    const txs = storage.listTransactions({ startDate, endDate });
+    const accounts = storage.listAccounts();
+    const acctMap = new Map(accounts.map((a) => [a.id, a]));
+
+    // Categorize the leak type from description.
+    type LeakKind = "late_fee" | "interest" | "nsf" | "service_fee" | "foreign_tx" | "atm" | "other";
+    function classify(desc: string): LeakKind | null {
+      const d = desc.toLowerCase();
+      if (/late\s*(payment\s*)?fee/.test(d)) return "late_fee";
+      if (/interest\s*charge|finance\s*charge|periodic\s*interest|purchase\s*interest/.test(d)) return "interest";
+      if (/nsf|insufficient\s*funds|returned\s*item|overdraft/.test(d)) return "nsf";
+      if (/foreign\s*(transaction|currency)|forex\s*fee/.test(d)) return "foreign_tx";
+      if (/atm\s*(fee|surcharge|withdrawal\s*fee)/.test(d)) return "atm";
+      if (/service\s*(charge|fee)|monthly\s*fee|annual\s*fee|maintenance\s*fee|membership\s*fee/.test(d)) return "service_fee";
+      // catch-all for things tagged "fee" or "charge" but skip generic merchant names
+      if (/\bfee\b/.test(d) && !/\bregis|ferry|sothe/.test(d)) return "other";
+      return null;
+    }
+
+    interface LeakItem {
+      id: number;
+      date: string;
+      description: string;
+      amount: number;
+      accountId: number;
+      accountName: string;
+      kind: LeakKind;
+    }
+    const items: LeakItem[] = [];
+    for (const t of txs) {
+      const kind = classify(t.description || "");
+      if (!kind) continue;
+      // only outflows count as leaks (positive on credit cards = payment, skip)
+      if (t.amount >= 0) continue;
+      const acct = acctMap.get(t.accountId);
+      items.push({
+        id: t.id,
+        date: t.date,
+        description: t.description,
+        amount: t.amount,
+        accountId: t.accountId,
+        accountName: acct?.name || "Unknown",
+        kind,
+      });
+    }
+    // sort newest first
+    items.sort((a, b) => (a.date < b.date ? 1 : -1));
+
+    // Summaries by account and by kind.
+    const byAccount = new Map<number, { accountId: number; accountName: string; total: number; count: number }>();
+    const byKind = new Map<LeakKind, { kind: LeakKind; total: number; count: number }>();
+    for (const it of items) {
+      const a = byAccount.get(it.accountId) || { accountId: it.accountId, accountName: it.accountName, total: 0, count: 0 };
+      a.total += Math.abs(it.amount);
+      a.count += 1;
+      byAccount.set(it.accountId, a);
+      const k = byKind.get(it.kind) || { kind: it.kind, total: 0, count: 0 };
+      k.total += Math.abs(it.amount);
+      k.count += 1;
+      byKind.set(it.kind, k);
+    }
+    const totalLeak = items.reduce((s, it) => s + Math.abs(it.amount), 0);
+
+    res.json({
+      totalLeak,
+      itemCount: items.length,
+      byAccount: Array.from(byAccount.values()).sort((a, b) => b.total - a.total),
+      byKind: Array.from(byKind.values()).sort((a, b) => b.total - a.total),
+      items,
+    });
   });
 
   app.post("/api/import/parse-pdf", async (req, res) => {

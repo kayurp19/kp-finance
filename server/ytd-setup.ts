@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import Papa from "papaparse";
 import { storage } from "./storage";
 import { suggestMerchant } from "./merchant-rules";
-import type { InsertAccount, InsertTransaction, Account, Category } from "@shared/schema";
+import type { InsertAccount, InsertTransaction, Account, Category, InsertBusiness } from "@shared/schema";
 
 // Find seed-data directory. In dev: <repo>/server/seed-data. In prod (bundled
 // to dist/index.cjs): <repo>/dist/seed-data, copied during build.
@@ -246,11 +246,22 @@ function tagTransfersAndCategorize(
   // (actual return handled in main loop)
 }
 
+// Default business entities for Kayur. Created at setup so personal-card business
+// expenses can be assigned (and reimbursements tracked) right out of the box.
+const DEFAULT_BUSINESSES: InsertBusiness[] = [
+  { name: "Cicero Grand", archived: false } as InsertBusiness,
+  { name: "Syracuse Grand", archived: false } as InsertBusiness,
+  { name: "Super 8", archived: false } as InsertBusiness,
+  { name: "PuroClean", archived: false } as InsertBusiness,
+];
+
 interface YtdResult {
   accountsCreated: number;
+  businessesCreated: number;
   transactionsImported: number;
   transactionsCategorized: number;
   transfersTagged: number;
+  rowsSkipped: number;
   perAccount: Array<{ name: string; transactions: number; inflow: number; outflow: number }>;
   warnings: string[];
 }
@@ -258,9 +269,11 @@ interface YtdResult {
 export async function runYtdSetup(): Promise<YtdResult> {
   const result: YtdResult = {
     accountsCreated: 0,
+    businessesCreated: 0,
     transactionsImported: 0,
     transactionsCategorized: 0,
     transfersTagged: 0,
+    rowsSkipped: 0,
     perAccount: [],
     warnings: [],
   };
@@ -309,7 +322,16 @@ export async function runYtdSetup(): Promise<YtdResult> {
       continue;
     }
     const rows = parseFile(spec, content);
-    parsed.push({ spec, rows });
+    // Drop blank/garbage rows: must have a non-empty description AND a non-zero
+    // amount AND a parseable date. Statement CSVs often include blank trailing
+    // rows or summary rows that slip through Papa Parse.
+    const cleanRows = rows.filter((r) => {
+      if (!r.description || !r.description.trim()) { result.rowsSkipped += 1; return false; }
+      if (!r.date || !/^\d{4}-\d{2}-\d{2}$/.test(r.date)) { result.rowsSkipped += 1; return false; }
+      if (!Number.isFinite(r.amount) || r.amount === 0) { result.rowsSkipped += 1; return false; }
+      return true;
+    });
+    parsed.push({ spec, rows: cleanRows });
   }
 
   // Create accounts.
@@ -329,6 +351,16 @@ export async function runYtdSetup(): Promise<YtdResult> {
   for (const sa of STATIC_ACCOUNTS) {
     storage.createAccount(sa);
     result.accountsCreated += 1;
+  }
+
+  // Default business entities (Cicero Grand, Syracuse Grand, Super 8, PuroClean).
+  // Idempotent: skip if a business with the same name already exists.
+  const existingBusinesses = storage.listBusinesses();
+  const existingBizNames = new Set(existingBusinesses.map((b) => b.name.toLowerCase()));
+  for (const bz of DEFAULT_BUSINESSES) {
+    if (existingBizNames.has(bz.name.toLowerCase())) continue;
+    storage.createBusiness(bz);
+    result.businessesCreated += 1;
   }
 
   // Detect inter-account transfers BEFORE inserting so we can tag.

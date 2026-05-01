@@ -7,8 +7,8 @@ import { Money } from "@/components/Money";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Link } from "wouter";
-import { FileText } from "lucide-react";
-import type { Transaction, Category } from "@shared/schema";
+import { FileText, AlertTriangle, Phone } from "lucide-react";
+import type { Transaction, Category, Account } from "@shared/schema";
 import {
   PieChart, Pie, Cell, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip,
   Legend, Line, CartesianGrid, ComposedChart, ReferenceLine,
@@ -227,7 +227,7 @@ export default function ReportsPage() {
           )}
         </Card>
 
-        <Card className="p-5">
+        <Card className="p-5" data-testid="card-top-merchants">
           <h2 className="text-[15px] font-semibold mb-3">Top merchants</h2>
           {topMerchants.length === 0 ? (
             <div className="text-[13px] text-muted-foreground italic py-8 text-center">No spending in this period.</div>
@@ -246,7 +246,186 @@ export default function ReportsPage() {
           )}
         </Card>
       </div>
+
+      <MoneyLeakSection startDate={startDate} endDate={endDate} label={label} />
     </div>
+  );
+}
+
+// ===== Money Leak section =====
+// Surfaces late fees, finance charges, NSF, and other avoidable charges so
+// Kayur can call the bank and dispute them, plus stop the bleed going forward.
+interface LeakItem {
+  id: number;
+  date: string;
+  description: string;
+  amount: number;
+  accountId: number;
+  accountName: string;
+  kind: "late_fee" | "interest" | "nsf" | "service_fee" | "foreign_tx" | "atm" | "other";
+}
+interface LeakResponse {
+  totalLeak: number;
+  itemCount: number;
+  byAccount: { accountId: number; accountName: string; total: number; count: number }[];
+  byKind: { kind: LeakItem["kind"]; total: number; count: number }[];
+  items: LeakItem[];
+}
+const KIND_LABEL: Record<LeakItem["kind"], string> = {
+  late_fee: "Late fees",
+  interest: "Interest charges",
+  nsf: "NSF / Overdraft",
+  service_fee: "Service / Annual fees",
+  foreign_tx: "Foreign transaction fees",
+  atm: "ATM fees",
+  other: "Other fees",
+};
+const BANK_PHONE: Record<string, { phone: string; tip: string }> = {
+  Chase: { phone: "1-800-432-3117", tip: "Ask for 'fee reversal' on late fees. First-time courtesy reversal usually granted." },
+  KeyBank: { phone: "1-800-539-2968", tip: "Mention you're a long-time customer. NSF fees often reversed once per year." },
+  TD: { phone: "1-888-561-8861", tip: "TD's interest charges compound — request hardship-reduction or balance transfer." },
+  Discover: { phone: "1-800-347-2683", tip: "Discover famously reverses late fees on first ask. Always ask for APR reduction too." },
+  Citi: { phone: "1-800-950-5114", tip: "Citi will often waive one late fee per year + reduce APR if you ask politely." },
+  Citibank: { phone: "1-800-950-5114", tip: "Citi will often waive one late fee per year + reduce APR if you ask politely." },
+  Amex: { phone: "1-800-528-4800", tip: "Amex Membership Reps have wide latitude. Ask for fee reversal + APR reduction." },
+  "American Express": { phone: "1-800-528-4800", tip: "Amex Membership Reps have wide latitude. Ask for fee reversal + APR reduction." },
+  NBT: { phone: "1-800-628-2265", tip: "Local relationship matters at NBT — call the branch you opened the account at." },
+};
+function phoneFor(accountName: string): { phone: string; tip: string } | null {
+  for (const [k, v] of Object.entries(BANK_PHONE)) {
+    if (accountName.toLowerCase().includes(k.toLowerCase())) return v;
+  }
+  return null;
+}
+
+function MoneyLeakSection({ startDate, endDate, label }: { startDate: string; endDate: string; label: string }) {
+  const { data: leak, isLoading } = useQuery<LeakResponse>({
+    queryKey: ["/api/reports/money-leak", { startDate, endDate }],
+  });
+  const { data: accounts = [] } = useQuery<Account[]>({ queryKey: ["/api/accounts"] });
+  const acctMap = useMemo(() => new Map(accounts.map((a) => [a.id, a])), [accounts]);
+
+  if (isLoading) return <Skeleton className="h-40" />;
+  if (!leak || leak.itemCount === 0) {
+    return (
+      <Card className="p-5" data-testid="card-money-leak">
+        <div className="flex items-start gap-3">
+          <div className="h-9 w-9 rounded-md bg-success/10 text-success flex items-center justify-center">
+            <CheckIcon />
+          </div>
+          <div>
+            <h2 className="text-[15px] font-semibold">No money leaks detected</h2>
+            <p className="text-[12px] text-muted-foreground mt-0.5">No late fees, interest charges, or service fees in {label}. Keep it up.</p>
+          </div>
+        </div>
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="p-5 border-warning/30" data-testid="card-money-leak">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div className="flex items-start gap-3">
+          <div className="h-9 w-9 rounded-md bg-warning/15 text-warning flex items-center justify-center shrink-0">
+            <AlertTriangle className="h-5 w-5" />
+          </div>
+          <div>
+            <h2 className="text-[15px] font-semibold">Money leak — {label}</h2>
+            <p className="text-[12px] text-muted-foreground mt-0.5">{leak.itemCount} fee/interest charges across {leak.byAccount.length} accounts. Most are negotiable — call and ask for a reversal.</p>
+          </div>
+        </div>
+        <div className="text-right">
+          <Money cents={leak.totalLeak} size="2xl" abs className="font-semibold text-warning" />
+          <div className="text-[10px] uppercase tracking-wide text-muted-foreground mt-0.5">total wasted</div>
+        </div>
+      </div>
+
+      <div className="mt-5 grid grid-cols-1 md:grid-cols-2 gap-5">
+        {/* By account: dispute helper */}
+        <div>
+          <h3 className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-2">Where it's leaking from</h3>
+          <div className="space-y-2">
+            {leak.byAccount.map((a) => {
+              const acct = acctMap.get(a.accountId);
+              const phone = phoneFor(acct?.institution || acct?.name || a.accountName);
+              return (
+                <div key={a.accountId} className="rounded-md border border-card-border p-3" data-testid={`leak-account-${a.accountId}`}>
+                  <div className="flex items-center justify-between">
+                    <div className="text-[13px] font-medium">{a.accountName}</div>
+                    <Money cents={a.total} abs size="sm" className="font-semibold text-warning" />
+                  </div>
+                  <div className="flex items-center justify-between mt-1">
+                    <div className="text-[11px] text-muted-foreground">{a.count} charge{a.count === 1 ? "" : "s"}</div>
+                    {phone && (
+                      <a
+                        href={`tel:${phone.phone.replace(/[^0-9]/g, "")}`}
+                        className="text-[11px] text-primary hover:underline inline-flex items-center gap-1"
+                        data-testid={`leak-phone-${a.accountId}`}
+                      >
+                        <Phone className="h-3 w-3" />{phone.phone}
+                      </a>
+                    )}
+                  </div>
+                  {phone && (
+                    <p className="text-[11px] text-muted-foreground mt-1.5 italic">{phone.tip}</p>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* By kind: type breakdown */}
+        <div>
+          <h3 className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-2">By type</h3>
+          <div className="space-y-1.5">
+            {leak.byKind.map((k) => {
+              const pct = leak.totalLeak > 0 ? (k.total / leak.totalLeak) * 100 : 0;
+              return (
+                <div key={k.kind} data-testid={`leak-kind-${k.kind}`}>
+                  <div className="flex items-center justify-between text-[12px]">
+                    <span>{KIND_LABEL[k.kind]}</span>
+                    <span className="text-muted-foreground">
+                      <Money cents={k.total} abs size="xs" className="text-warning font-medium" />
+                      <span className="ml-1.5 text-[10px]">{k.count}×</span>
+                    </span>
+                  </div>
+                  <div className="h-1.5 bg-muted rounded-full mt-1 overflow-hidden">
+                    <div className="h-full bg-warning rounded-full" style={{ width: `${pct}%` }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <Link href="/transactions?search=fee">
+            <a className="mt-4 inline-flex text-[12px] text-primary hover:underline" data-testid="link-leak-all">
+              View all fee transactions →
+            </a>
+          </Link>
+        </div>
+      </div>
+
+      {/* Recent items */}
+      <div className="mt-5">
+        <h3 className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-2">Recent charges ({Math.min(leak.items.length, 8)} of {leak.items.length})</h3>
+        <div className="divide-y divide-border/60 rounded-md border border-card-border overflow-hidden">
+          {leak.items.slice(0, 8).map((it) => (
+            <div key={it.id} className="grid grid-cols-12 gap-2 px-3 py-2 text-[12px] items-center" data-testid={`leak-item-${it.id}`}>
+              <div className="col-span-2 text-muted-foreground tabular-nums">{it.date.slice(5)}</div>
+              <div className="col-span-5 truncate">{it.description}</div>
+              <div className="col-span-3 text-muted-foreground truncate">{it.accountName}</div>
+              <div className="col-span-2 text-right"><Money cents={it.amount} abs size="xs" className="text-warning font-medium" /></div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function CheckIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="currentColor" className="h-5 w-5"><path fillRule="evenodd" d="M16.7 5.3a1 1 0 0 1 0 1.4l-7.5 7.5a1 1 0 0 1-1.4 0l-3.5-3.5a1 1 0 0 1 1.4-1.4l2.8 2.8 6.8-6.8a1 1 0 0 1 1.4 0Z" clipRule="evenodd" /></svg>
   );
 }
 
