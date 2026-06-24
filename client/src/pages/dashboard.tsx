@@ -7,7 +7,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { ArrowUpRight, ArrowDownRight, Briefcase, AlertCircle, Plus, Sparkles, FileQuestion, TrendingUp, TrendingDown, Zap, CheckCircle2, Loader2 } from "lucide-react";
+import { ArrowUpRight, ArrowDownRight, Briefcase, AlertCircle, Plus, Sparkles, FileQuestion, TrendingUp, TrendingDown, Zap, CheckCircle2, Loader2, Bell, Calendar as CalendarIcon } from "lucide-react";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import type { Account, Bill, Transaction } from "@shared/schema";
@@ -130,6 +130,8 @@ export default function DashboardPage() {
           )}
         </div>
       </Card>
+
+      <BillsDuePanel />
 
       <QuickFixesPanel />
 
@@ -491,6 +493,158 @@ function DashboardSkeleton() {
         <Skeleton className="h-64" />
       </div>
     </div>
+  );
+}
+
+// Bills Due panel: the first thing you see when you log in. Surfaces overdue
+// bills (red), due-today/due-soon (amber), and the rest of the week (neutral).
+// One-click "Mark paid" right from the dashboard.
+interface UpcomingBill {
+  id: number;
+  name: string;
+  payee: string | null;
+  amount: number;
+  nextDueDate: string;
+  daysUntil: number;
+  status: "overdue" | "due_today" | "due_soon" | "upcoming";
+  autopay: boolean;
+  frequency: string;
+  accountId: number | null;
+  accountName: string | null;
+}
+interface UpcomingResponse {
+  items: UpcomingBill[];
+  totals: {
+    overdueCount: number;
+    overdueAmount: number;
+    dueSoonCount: number;
+    dueSoonAmount: number;
+    upcomingCount: number;
+    upcomingAmount: number;
+  };
+}
+
+function BillsDuePanel() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const { data, isLoading } = useQuery<UpcomingResponse>({
+    queryKey: ["/api/bills/upcoming", { days: 14 }],
+    queryFn: async () => {
+      const r = await apiRequest("GET", "/api/bills/upcoming?days=14");
+      return r.json();
+    },
+  });
+
+  const markPaid = useMutation({
+    mutationFn: async (id: number) => {
+      await apiRequest("POST", `/api/bills/${id}/pay`, { paidDate: todayISO() });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/bills/upcoming"] });
+      qc.invalidateQueries({ queryKey: ["/api/bills"] });
+      qc.invalidateQueries({ queryKey: ["/api/dashboard"] });
+      toast({ title: "Marked paid" });
+    },
+    onError: (e: any) => toast({ title: "Couldn't mark paid", description: e.message, variant: "destructive" }),
+  });
+
+  if (isLoading) return <Skeleton className="h-40" />;
+  const items = data?.items ?? [];
+  const totals = data?.totals;
+  const hasOverdue = (totals?.overdueCount || 0) > 0;
+  const hasDueSoon = (totals?.dueSoonCount || 0) > 0;
+  // Empty state
+  if (!items.length) {
+    return (
+      <Card className="p-5">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="h-8 w-8 rounded-full bg-success/10 grid place-items-center">
+              <CheckCircle2 className="h-4 w-4 text-success" />
+            </div>
+            <div>
+              <h2 className="text-[14px] font-semibold">No bills due in the next 14 days</h2>
+              <p className="text-[12px] text-muted-foreground">You're all clear. Add bills on the Bills page so I can remind you.</p>
+            </div>
+          </div>
+          <Link href="/bills"><Button size="sm" variant="outline" data-testid="button-add-bill-empty"><Plus className="h-3.5 w-3.5 mr-1" />Add bill</Button></Link>
+        </div>
+      </Card>
+    );
+  }
+
+  // The headline color matches the most urgent state.
+  const headlineTone = hasOverdue ? "destructive" : hasDueSoon ? "warning" : "primary";
+  const headlineBg = hasOverdue ? "bg-destructive/10" : hasDueSoon ? "bg-warning/10" : "bg-primary/10";
+  const headlineText = hasOverdue ? "text-destructive" : hasDueSoon ? "text-warning" : "text-primary";
+
+  return (
+    <Card className={cn("overflow-hidden", hasOverdue && "border-destructive/40")}>
+      {/* Headline strip */}
+      <div className={cn("px-5 py-3 flex items-center justify-between gap-3 border-b border-border", headlineBg)}>
+        <div className="flex items-center gap-2.5">
+          <Bell className={cn("h-4 w-4", headlineText)} />
+          <div>
+            <div className="text-[14px] font-semibold">
+              {hasOverdue ? (
+                <span><span className={headlineText}>{totals!.overdueCount} overdue</span> · <Money cents={totals!.overdueAmount} abs size="sm" className="font-semibold" /></span>
+              ) : hasDueSoon ? (
+                <span><span className={headlineText}>{totals!.dueSoonCount} due in the next 3 days</span> · <Money cents={totals!.dueSoonAmount} abs size="sm" className="font-semibold" /></span>
+              ) : (
+                <span>{totals!.upcomingCount} bill{totals!.upcomingCount === 1 ? "" : "s"} this week</span>
+              )}
+            </div>
+            <div className="text-[11.5px] text-muted-foreground">Daily email reminder runs at 8:00 AM Eastern</div>
+          </div>
+        </div>
+        <Link href="/bills"><Button size="sm" variant="ghost" data-testid="button-all-bills">All bills <ArrowUpRight className="h-3.5 w-3.5 ml-1" /></Button></Link>
+      </div>
+
+      {/* List */}
+      <div className="divide-y divide-border">
+        {items.slice(0, 8).map((b) => {
+          const tone =
+            b.status === "overdue" ? "text-destructive" :
+            b.status === "due_today" || b.status === "due_soon" ? "text-warning" : "text-muted-foreground";
+          const dueLabel =
+            b.status === "overdue" ? `Overdue by ${Math.abs(b.daysUntil)} day${Math.abs(b.daysUntil) === 1 ? "" : "s"}` :
+            b.status === "due_today" ? "Due today" :
+            `Due in ${b.daysUntil} day${b.daysUntil === 1 ? "" : "s"}`;
+          return (
+            <div key={b.id} className="px-5 py-3 flex items-center justify-between gap-3" data-testid={`bill-due-${b.id}`}>
+              <div className="min-w-0 flex-1 flex items-center gap-3">
+                <CalendarIcon className="h-4 w-4 text-muted-foreground shrink-0" />
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[13.5px] font-medium truncate">{b.name}</span>
+                    {b.autopay && <span className="text-[10px] uppercase tracking-wide bg-secondary text-secondary-foreground px-1.5 py-0.5 rounded shrink-0">Autopay</span>}
+                  </div>
+                  <div className="text-[11.5px] text-muted-foreground truncate">
+                    <span className={tone + " font-medium"}>{dueLabel}</span>
+                    <span> · {formatDateShort(b.nextDueDate)}</span>
+                    {b.accountName && <span> · from {b.accountName}</span>}
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-3 shrink-0">
+                <Money cents={b.amount} abs size="sm" className="font-semibold" />
+                {!b.autopay && (
+                  <Button size="sm" variant="outline" onClick={() => markPaid.mutate(b.id)} disabled={markPaid.isPending} data-testid={`button-pay-due-${b.id}`}>
+                    {markPaid.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5 mr-1" />}
+                    Paid
+                  </Button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+        {items.length > 8 && (
+          <div className="px-5 py-2.5 text-center">
+            <Link href="/bills"><a className="text-[12px] text-muted-foreground hover:underline">+ {items.length - 8} more this week →</a></Link>
+          </div>
+        )}
+      </div>
+    </Card>
   );
 }
 

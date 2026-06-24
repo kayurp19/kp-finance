@@ -180,6 +180,49 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // ===== Bills =====
   app.get("/api/bills", (_req, res) => res.json(storage.listBills()));
+  // Upcoming bills: overdue + due within the next N days (default 14). Used by the
+  // dashboard "Due this week" panel AND the daily reminder cron.
+  app.get("/api/bills/upcoming", (req, res) => {
+    const days = Math.max(0, Math.min(60, Number(req.query.days) || 14));
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const horizon = new Date(today); horizon.setDate(horizon.getDate() + days);
+    const toISO = (d: Date) => d.toISOString().slice(0, 10);
+    const todayStr = toISO(today);
+    const horizonStr = toISO(horizon);
+    const all = storage.listBills();
+    const accounts = storage.listAccounts();
+    const acctMap = new Map(accounts.map((a) => [a.id, a]));
+    const items = all
+      .filter((b) => b.nextDueDate <= horizonStr)
+      .map((b) => {
+        const due = new Date(b.nextDueDate + "T00:00:00");
+        const daysUntil = Math.round((due.getTime() - today.getTime()) / 86400000);
+        const status: "overdue" | "due_today" | "due_soon" | "upcoming" =
+          daysUntil < 0 ? "overdue" : daysUntil === 0 ? "due_today" : daysUntil <= 3 ? "due_soon" : "upcoming";
+        return {
+          id: b.id,
+          name: b.name,
+          payee: b.payee,
+          amount: b.amount,
+          nextDueDate: b.nextDueDate,
+          daysUntil,
+          status,
+          autopay: b.autopay,
+          frequency: b.frequency,
+          accountId: b.accountId,
+          accountName: b.accountId ? acctMap.get(b.accountId)?.name || null : null,
+        };
+      });
+    const totals = {
+      overdueCount: items.filter((i) => i.status === "overdue").length,
+      overdueAmount: items.filter((i) => i.status === "overdue").reduce((s, i) => s + i.amount, 0),
+      dueSoonCount: items.filter((i) => i.status === "due_today" || i.status === "due_soon").length,
+      dueSoonAmount: items.filter((i) => i.status === "due_today" || i.status === "due_soon").reduce((s, i) => s + i.amount, 0),
+      upcomingCount: items.length,
+      upcomingAmount: items.reduce((s, i) => s + i.amount, 0),
+    };
+    res.json({ items, totals, asOf: todayStr, horizonDays: days });
+  });
   app.post("/api/bills", (req, res) => {
     const parsed = insertBillSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ message: parsed.error.message });
