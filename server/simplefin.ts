@@ -275,6 +275,7 @@ export async function syncAll(opts: { days?: number } = {}): Promise<SyncResult[
   for (const c of listConnections()) out.push(await syncConnection(c, opts));
   storage.setSetting("simplefin_last_sync_all", new Date().toISOString());
   retagSyncedTransfers();
+  try { (await import("./books")).applyBusinessRules(); } catch (e) { console.warn("[books] business rules failed", e); }
   try { (await import("./planner")).autoMatchBills(); } catch (e) { console.warn("[bills] auto-match failed", e); }
   return out;
 }

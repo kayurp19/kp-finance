@@ -4,18 +4,22 @@ import { useTheme } from "@/lib/theme";
 import { useAuth } from "@/lib/auth";
 import {
   LayoutDashboard, Wallet, ListTree, Upload, Calendar,
-  Tags, BarChart3, Settings, Sun, Moon, LogOut, Building2, Menu, X, Calculator } from "lucide-react";
+  Tags, BarChart3, Settings, Sun, Moon, LogOut, Building2, Menu, X, Calculator, Compass, BookOpen } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Logo } from "@/components/Logo";
 import { QuickAddButton } from "@/components/QuickAddDialog";
 
 const NAV = [
-  { href: "/", label: "Dashboard", icon: LayoutDashboard, exact: true },
-  { href: "/plan", label: "Plan & Afford", icon: Calculator },
+  { href: "/", label: "Start here", icon: Compass, exact: true },
   { href: "/bills", label: "Bills", icon: Calendar },
+  { href: "/books", label: "My Books", icon: BookOpen },
+  { href: "/plan", label: "Can I afford it?", icon: Calculator },
   { href: "/accounts", label: "Accounts", icon: Wallet },
-  { href: "/transactions", label: "Transactions", icon: ListTree },
-  { href: "/import", label: "Import", icon: Upload },
+];
+const MORE = [
+  { href: "/overview", label: "Overview", icon: LayoutDashboard },
+  { href: "/transactions", label: "All transactions", icon: ListTree },
+  { href: "/import", label: "Upload statements", icon: Upload },
   { href: "/businesses", label: "Reimbursements", icon: Building2 },
   { href: "/categories", label: "Categories", icon: Tags },
   { href: "/reports", label: "Reports", icon: BarChart3 },
@@ -43,27 +47,28 @@ export function Layout({ children }: { children: ReactNode }) {
     return () => { document.body.style.overflow = ""; };
   }, [mobileNavOpen]);
 
+  const renderItem = (item: { href: string; label: string; icon: any; exact?: boolean }) => {
+    const active = item.exact ? location === item.href : location === item.href || location.startsWith(item.href + "/");
+    const Icon = item.icon;
+    return (
+      <Link key={item.href} href={item.href}>
+        <a
+          data-testid={`nav-${item.label.toLowerCase().replace(/[^a-z]+/g, "-")}`}
+          className={`flex items-center gap-2.5 px-3 py-2.5 rounded-md text-[13px] font-medium transition-colors hover-elevate ${
+            active ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-sidebar-foreground/80"
+          }`}
+        >
+          <Icon className="h-[15px] w-[15px]" />
+          {item.label}
+        </a>
+      </Link>
+    );
+  };
   const NavList = (
     <nav className="flex-1 px-3 py-2 space-y-0.5 overflow-y-auto">
-      {NAV.map((item) => {
-        const active = item.exact ? location === item.href : location === item.href || location.startsWith(item.href + "/");
-        const Icon = item.icon;
-        return (
-          <Link key={item.href} href={item.href}>
-            <a
-              data-testid={`nav-${item.label.toLowerCase()}`}
-              className={`flex items-center gap-2.5 px-3 py-2.5 rounded-md text-[13px] font-medium transition-colors hover-elevate ${
-                active
-                  ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                  : "text-sidebar-foreground/80"
-              }`}
-            >
-              <Icon className="h-[15px] w-[15px]" />
-              {item.label}
-            </a>
-          </Link>
-        );
-      })}
+      {NAV.map(renderItem)}
+      <div className="pt-4 pb-1 px-3 text-[11px] uppercase tracking-wide text-sidebar-foreground/50">More</div>
+      {MORE.map(renderItem)}
     </nav>
   );
 

@@ -17,6 +17,8 @@ import TransactionsPage from "@/pages/transactions";
 import ImportPage from "@/pages/import";
 import BillsPage from "@/pages/bills";
 import PlanPage from "@/pages/plan";
+import GuidePage from "@/pages/guide";
+import BooksPage from "@/pages/books";
 import BusinessesPage from "@/pages/businesses";
 import BusinessAssignPage from "@/pages/business-assign";
 import CategoriesPage from "@/pages/categories";
@@ -55,7 +57,10 @@ function ProtectedRouter() {
   return (
     <Layout>
       <Switch>
-        <Route path="/" component={DashboardPage} />
+        <Route path="/" component={GuidePage} />
+        <Route path="/overview" component={DashboardPage} />
+        <Route path="/books" component={BooksPage} />
+        <Route path="/books/:tab" component={BooksPage} />
         <Route path="/accounts" component={AccountsPage} />
         <Route path="/accounts/:id" component={AccountDetailPage} />
         <Route path="/transactions" component={TransactionsPage} />

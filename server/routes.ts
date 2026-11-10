@@ -17,6 +17,7 @@ import { pdfToCsv } from "./pdf-import";
 import { runYtdSetup } from "./ytd-setup";
 import * as simplefin from "./simplefin";
 import * as planner from "./planner";
+import * as books from "./books";
 import { isTransferDescription } from "./money";
 import { sqlite } from "./storage";
 
@@ -49,6 +50,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // Public, key-protected calendar feed for phone/Outlook calendar subscriptions (no login cookie available there).
   app.get("/cal/:key/bills.ics", (req, res) => {
     if (req.params.key !== planner.calendarKey()) return res.status(404).send("Not found");
+    try { storage.setSetting("calendar_last_fetch", new Date().toISOString()); } catch {}
     res.setHeader("Content-Type", "text/calendar; charset=utf-8");
     res.setHeader("Cache-Control", "no-cache");
     res.send(planner.buildIcs());
@@ -167,6 +169,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const { autoLearn, ...patch } = req.body || {};
     const updated = storage.updateTransaction(Number(req.params.id), patch);
     if (!updated) return res.status(404).json({ message: "Not found" });
+    if ("categoryId" in patch || "isBusinessExpense" in patch || "businessId" in patch) {
+      try { sqlite.prepare("UPDATE transactions SET reviewed = 1 WHERE id = ?").run(updated.id); } catch {}
+    }
     // Auto-learn: when the user picks a category, create a rule for similar future transactions.
     if (autoLearn && patch.categoryId && updated.description) {
       const token = storage.extractMerchantToken(updated.description);
@@ -194,6 +199,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const { ids, data } = req.body || {};
     if (!Array.isArray(ids)) return res.status(400).json({ message: "ids required" });
     storage.bulkUpdateTransactions(ids, data || {});
+    if (data && ("categoryId" in data || "isBusinessExpense" in data || "businessId" in data) && ids.length) {
+      try { sqlite.prepare(`UPDATE transactions SET reviewed = 1 WHERE id IN (${ids.map(() => "?").join(",")})`).run(...ids.map(Number)); } catch {}
+    }
     res.json({ ok: true });
   });
 
@@ -677,6 +685,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         pending: false,
       } as any);
     }
+    try { books.applyBusinessRules(); } catch (e) { console.error("business rules", e); }
     res.json({ batch, imported: newRows.length });
   });
   app.get("/api/import/batches", (_req, res) => res.json(storage.listImportBatches()));
@@ -793,6 +802,22 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     storage.recomputeAccountBalance(toId);
     res.json({ ok: true, moved, dropped, account: storage.getAccount(toId) });
   });
+
+  // ===== Books: review queue, P&L, balance sheet =====
+  books.init();
+  const wrap = (fn: (req: any) => any) => (req: any, res: any) => {
+    try { res.json(fn(req)); } catch (e: any) { res.status(400).json({ message: e?.message || "Error" }); }
+  };
+  app.get("/api/books/review", wrap((req) => books.reviewQueue({ days: Number(req.query.days) || 365, includeCategorized: req.query.all === "1" })));
+  app.post("/api/books/review/decide", wrap((req) => books.decide(req.body || {})));
+  app.post("/api/books/review/reopen", wrap((req) => ({ reopened: books.reopen(req.body || {}) })));
+  app.get("/api/books/business-rules", wrap(() => books.listBusinessRules()));
+  app.delete("/api/books/business-rules/:id", wrap((req) => { books.deleteBusinessRule(Number(req.params.id)); return { ok: true }; }));
+  app.get("/api/books/pnl", wrap((req) => books.profitAndLoss(String(req.query.start), String(req.query.end), req.query.mode === "business" ? "business" : "personal", req.query.businessId ? Number(req.query.businessId) : null)));
+  app.get("/api/books/pnl/lines", wrap((req) => books.pnlLines(String(req.query.start), String(req.query.end), req.query.mode === "business" ? "business" : "personal", String(req.query.key), req.query.businessId ? Number(req.query.businessId) : null)));
+  app.get("/api/books/balance-sheet", wrap(() => books.balanceSheet()));
+  app.get("/api/guide", wrap(() => books.moneyGuide()));
+  app.post("/api/books/balance-items", wrap((req) => books.saveManualItems(req.body?.items || [])));
 
   // ===== Bills: overview, setup, suggestions, calendar =====
   app.get("/api/bills/overview", (_req, res) => res.json(planner.billsOverview()));
