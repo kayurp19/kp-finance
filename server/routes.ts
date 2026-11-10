@@ -15,6 +15,8 @@ import type { Transaction } from "@shared/schema";
 import { applyColumnMap, makeExternalId, parseCsv } from "./csv";
 import { pdfToCsv } from "./pdf-import";
 import { runYtdSetup } from "./ytd-setup";
+import * as simplefin from "./simplefin";
+import { sqlite } from "./storage";
 
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
   app.use(cookieParser());
@@ -595,9 +597,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const parsed = applyColumnMap(rows, columnMap);
     const externalIds = parsed.map((r) => makeExternalId(accountId, r));
     const existing = storage.findExistingExternalIds(accountId, externalIds);
+    // Rows that bank sync already imported have different descriptions; match by amount within 3 days (one-to-one).
+    const synced = sqlite.prepare("SELECT id, date, amount FROM transactions WHERE account_id = ? AND external_id LIKE 'sf:%'").all(Number(accountId)) as { id: number; date: string; amount: number }[];
+    const usedSynced = new Set<number>();
+    const dayDiff = (a: string, b: string) => Math.abs((Date.parse(a) - Date.parse(b)) / 86400000);
     const previewRows = parsed.map((r, i) => {
       const externalId = externalIds[i];
-      const isDuplicate = existing.has(externalId);
+      let isDuplicate = existing.has(externalId);
+      if (!isDuplicate) {
+        const hit = synced.find((t) => !usedSynced.has(t.id) && t.amount === Number(r.amount) && dayDiff(t.date, r.date) <= 3);
+        if (hit) { usedSynced.add(hit.id); isDuplicate = true; }
+      }
       const { categoryId, cleanMerchant } = storage.applyRules(r.description, null);
       return { ...r, externalId, isDuplicate, categoryId, merchant: cleanMerchant };
     });
@@ -641,6 +651,71 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get("/api/import/batches", (_req, res) => res.json(storage.listImportBatches()));
   app.delete("/api/import/batches/:id", (req, res) => {
     storage.deleteImportBatch(Number(req.params.id));
+    res.json({ ok: true });
+  });
+
+  // ===== SimpleFIN bank sync =====
+  app.get("/api/simplefin/status", (_req, res) => res.json(simplefin.getStatus()));
+  app.post("/api/simplefin/connect", async (req, res) => {
+    const { token, label } = req.body || {};
+    if (!token || typeof token !== "string") return res.status(400).json({ message: "Paste your SimpleFIN setup token." });
+    try {
+      const conn = await simplefin.claimSetupToken(token, String(label || "SimpleFIN"));
+      const sync = await simplefin.syncConnection(conn);
+      res.json({ ok: true, connectionId: conn.id, sync });
+    } catch (e: any) {
+      res.status(400).json({ message: e?.message || "Could not connect" });
+    }
+  });
+  app.post("/api/simplefin/sync", async (req, res) => {
+    try {
+      const days = req.body?.days ? Math.min(90, Math.max(1, Number(req.body.days))) : undefined;
+      res.json({ ok: true, results: await simplefin.runManualSync(days) });
+    } catch (e: any) {
+      res.status(409).json({ message: e?.message || "Sync failed" });
+    }
+  });
+  app.patch("/api/simplefin/accounts/:id", async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const { mappedAccountId, ignored } = req.body || {};
+      simplefin.updateSfAccount(id, {
+        mappedAccountId: mappedAccountId === undefined ? undefined : (mappedAccountId ? Number(mappedAccountId) : null),
+        ignored: typeof ignored === "boolean" ? ignored : undefined,
+      });
+      // Pull history right away for a newly linked account.
+      if (mappedAccountId) {
+        const row = sqlite.prepare("SELECT connection_id FROM simplefin_accounts WHERE id = ?").get(id) as any;
+        const conn = simplefin.listConnections().find((c) => c.id === row?.connection_id);
+        if (conn) await simplefin.syncConnection(conn, { days: 90 });
+      }
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(400).json({ message: e?.message || "Update failed" });
+    }
+  });
+  app.post("/api/simplefin/accounts/:id/create-account", async (req, res) => {
+    const id = Number(req.params.id);
+    const row = sqlite.prepare("SELECT * FROM simplefin_accounts WHERE id = ?").get(id) as any;
+    if (!row) return res.status(404).json({ message: "Not found" });
+    const type = String(req.body?.type || "checking");
+    const owner = String(req.body?.owner || "Kayur");
+    const last4 = (String(row.name).match(/\d{4}(?!.*\d{4})/) || [])[0] || null;
+    const acct = storage.createAccount({
+      name: String(req.body?.name || row.name),
+      type,
+      institution: row.org_name || null,
+      last4,
+      currentBalance: 0,
+      owner,
+    } as any);
+    simplefin.updateSfAccount(id, { mappedAccountId: acct.id });
+    const conn = simplefin.listConnections().find((c) => c.id === row.connection_id);
+    if (conn) await simplefin.syncConnection(conn, { days: 90 });
+    res.json({ ok: true, account: storage.getAccount(acct.id) });
+  });
+  app.delete("/api/simplefin/connections/:id", (req, res) => {
+    simplefin.deleteConnection(Number(req.params.id));
     res.json({ ok: true });
   });
 

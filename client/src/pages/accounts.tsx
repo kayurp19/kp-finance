@@ -59,6 +59,8 @@ export default function AccountsPage() {
                     {a.institution ? ` · ${a.institution}` : ""}
                     {a.last4 ? ` · •••${a.last4}` : ""}
                     {a.lastReconciledAt ? ` · reconciled ${formatDate(a.lastReconciledAt)}` : ""}
+                    {a.owner && a.owner !== "Kayur" ? ` · ${a.owner}` : ""}
+                    {a.bankBalanceAt ? ` · synced ${formatDate(a.bankBalanceAt.slice(0, 10))}` : ""}
                   </div>
                 </div>
                 <div className="text-right">
@@ -103,7 +105,9 @@ export function AccountFormDialog({ account, onClose }: { account?: Account; onC
     notes: account?.notes ?? "",
     openingBalance: account ? ((account.openingBalance ?? 0) / 100).toString() : "",
     openingBalanceDate: account?.openingBalanceDate ?? "",
+    owner: (account as any)?.owner ?? "Kayur",
   });
+  const synced = account?.bankBalance !== null && account?.bankBalance !== undefined;
   const { toast } = useToast();
 
   const save = useMutation({
@@ -113,7 +117,8 @@ export function AccountFormDialog({ account, onClose }: { account?: Account; onC
         type: form.type,
         institution: form.institution || null,
         last4: form.last4 || null,
-        currentBalance: dollarsToCents(form.currentBalance),
+        owner: form.owner,
+        ...(synced ? {} : { currentBalance: dollarsToCents(form.currentBalance) }),
         creditLimit: form.creditLimit ? dollarsToCents(form.creditLimit) : null,
         notes: form.notes || null,
         archived: false,
@@ -158,15 +163,28 @@ export function AccountFormDialog({ account, onClose }: { account?: Account; onC
             <Input value={form.last4} onChange={(e) => setForm({ ...form, last4: e.target.value })} placeholder="1234" maxLength={4} data-testid="input-account-last4" />
           </div>
         </div>
+        <div className="grid grid-cols-2 gap-3">
+        <div>
+          <Label>Owner</Label>
+          <Select value={form.owner} onValueChange={(v) => setForm({ ...form, owner: v })}>
+            <SelectTrigger data-testid="select-account-owner"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="Kayur">Kayur</SelectItem>
+              <SelectItem value="Wife">Wife</SelectItem>
+              <SelectItem value="Joint">Joint</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
         <div>
           <Label>Institution</Label>
           <Input value={form.institution} onChange={(e) => setForm({ ...form, institution: e.target.value })} placeholder="e.g. Chase" data-testid="input-account-institution" />
         </div>
+        </div>
         <div className="grid grid-cols-2 gap-3">
           <div>
             <Label>Current balance ($)</Label>
-            <Input type="number" step="0.01" value={form.currentBalance} onChange={(e) => setForm({ ...form, currentBalance: e.target.value })} data-testid="input-account-balance" />
-            <p className="text-[10px] text-muted-foreground mt-1">For credit cards, enter as negative (e.g. -1234.56)</p>
+            <Input type="number" step="0.01" value={form.currentBalance} disabled={synced} onChange={(e) => setForm({ ...form, currentBalance: e.target.value })} data-testid="input-account-balance" />
+            <p className="text-[10px] text-muted-foreground mt-1">{synced ? "Set automatically by bank sync" : "For credit cards, enter as negative (e.g. -1234.56)"}</p>
           </div>
           {form.type === "credit_card" && (
             <div>

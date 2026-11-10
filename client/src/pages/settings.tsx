@@ -16,6 +16,7 @@ import { Separator } from "@/components/ui/separator";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { BankSyncCard } from "@/components/BankSyncCard";
 
 type SettingsResp = {
   dailyDigest: boolean;
@@ -59,13 +60,15 @@ export default function SettingsPage() {
   });
 
   return (
-    <div className="space-y-6 max-w-2xl">
+    <div className="px-6 md:px-10 py-8 space-y-6 max-w-3xl">
       <div>
         <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Account, notifications, and email setup.
+          Bank sync, account, notifications, and email setup.
         </p>
       </div>
+
+      <BankSyncCard />
 
       <Card data-testid="card-password">
         <CardHeader>

@@ -101,6 +101,7 @@ app.use((req, res, next) => {
     },
     () => {
       log(`serving on port ${port}`);
+      import("./simplefin").then((m) => m.startSimplefinScheduler()).catch((e) => console.warn("[simplefin] scheduler not started", e));
     },
   );
 })();

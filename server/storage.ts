@@ -37,6 +37,7 @@ console.log(`[db] using SQLite at ${dbPath}`);
 const sqlite = new Database(dbPath);
 sqlite.pragma("journal_mode = WAL");
 export const db = drizzle(sqlite);
+export { sqlite };
 
 // Auto-create tables (avoids needing drizzle-kit push at runtime)
 function initSchema() {
@@ -169,6 +170,44 @@ function initSchema() {
     }
   } catch (e) {
     console.warn("accounts opening-balance migration warning:", e);
+  }
+  // Migration: SimpleFIN bank sync columns + tables.
+  try {
+    const acols = sqlite.prepare("PRAGMA table_info(accounts)").all() as { name: string }[];
+    if (!acols.some((c) => c.name === "owner")) sqlite.exec("ALTER TABLE accounts ADD COLUMN owner TEXT NOT NULL DEFAULT 'Kayur';");
+    if (!acols.some((c) => c.name === "bank_balance")) sqlite.exec("ALTER TABLE accounts ADD COLUMN bank_balance INTEGER;");
+    if (!acols.some((c) => c.name === "bank_balance_at")) sqlite.exec("ALTER TABLE accounts ADD COLUMN bank_balance_at TEXT;");
+    const tcols = sqlite.prepare("PRAGMA table_info(transactions)").all() as { name: string }[];
+    if (!tcols.some((c) => c.name === "simplefin_id")) sqlite.exec("ALTER TABLE transactions ADD COLUMN simplefin_id TEXT;");
+    sqlite.exec(`
+      CREATE TABLE IF NOT EXISTS simplefin_connections (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        label TEXT NOT NULL,
+        access_url TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        last_sync_at TEXT,
+        last_sync_status TEXT,
+        last_errors TEXT
+      );
+      CREATE TABLE IF NOT EXISTS simplefin_accounts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        connection_id INTEGER NOT NULL,
+        sf_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        org_name TEXT,
+        currency TEXT,
+        balance INTEGER,
+        balance_date TEXT,
+        mapped_account_id INTEGER,
+        suggested_account_id INTEGER,
+        ignored INTEGER NOT NULL DEFAULT 0,
+        last_seen_at TEXT,
+        UNIQUE(connection_id, sf_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_tx_simplefin ON transactions(account_id, simplefin_id);
+    `);
+  } catch (e) {
+    console.warn("simplefin migration warning:", e);
   }
 }
 initSchema();
@@ -347,6 +386,11 @@ export const storage = {
   recomputeAccountBalance(accountId: number) {
     const acct = this.getAccount(accountId);
     if (!acct) return;
+    // Bank-synced balance (SimpleFIN) is authoritative when present.
+    if ((acct as any).bankBalance !== null && (acct as any).bankBalance !== undefined) {
+      db.update(accounts).set({ currentBalance: (acct as any).bankBalance }).where(eq(accounts.id, accountId)).run();
+      return;
+    }
     // If an opening balance + date are set, balance = opening + sum(tx where date > openingBalanceDate).
     // Otherwise fall back to the raw sum of all transactions (legacy behavior).
     let sum: { s: number };

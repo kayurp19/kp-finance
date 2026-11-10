@@ -20,6 +20,9 @@ export const accounts = sqliteTable("accounts", {
   // a YTD swing (sum of all imported tx). Computed balance = openingBalance + sum(tx where date > openingBalanceDate).
   openingBalance: integer("opening_balance").notNull().default(0),
   openingBalanceDate: text("opening_balance_date"), // ISO yyyy-mm-dd; null = no opening balance (use raw sum)
+  owner: text("owner").notNull().default("Kayur"), // Kayur | Wife | Joint
+  bankBalance: integer("bank_balance"), // latest balance reported by SimpleFIN (cents); overrides computed balance
+  bankBalanceAt: text("bank_balance_at"),
   createdAt: text("created_at").notNull(),
 });
 
@@ -53,6 +56,7 @@ export const transactions = sqliteTable("transactions", {
   importBatchId: integer("import_batch_id"),
   externalId: text("external_id"),
   pending: integer("pending", { mode: "boolean" }).notNull().default(false),
+  simplefinId: text("simplefin_id"),
   createdAt: text("created_at").notNull(),
 });
 

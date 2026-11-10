@@ -11,6 +11,7 @@ import { ArrowUpRight, ArrowDownRight, Briefcase, AlertCircle, Plus, Sparkles, F
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import type { Account, Bill, Transaction } from "@shared/schema";
+import { BankSyncAlert } from "@/components/BankSyncCard";
 
 type Period = "week" | "month" | "year";
 
@@ -79,6 +80,7 @@ export default function DashboardPage() {
           )}
         </div>
       </header>
+      <BankSyncAlert />
 
       {/* Hero: Net this period — Income / Expenses / Net */}
       <Card className="p-6">
