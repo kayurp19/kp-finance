@@ -818,6 +818,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get("/api/books/balance-sheet", wrap(() => books.balanceSheet()));
   app.get("/api/guide", wrap(() => books.moneyGuide()));
   app.post("/api/books/balance-items", wrap((req) => books.saveManualItems(req.body?.items || [])));
+  app.post("/api/books/balance-hide", wrap((req) => books.hideUntracked(Number(req.body?.id))));
 
   // ===== Bills: overview, setup, suggestions, calendar =====
   app.get("/api/bills/overview", (_req, res) => res.json(planner.billsOverview()));

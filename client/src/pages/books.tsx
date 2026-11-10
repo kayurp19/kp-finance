@@ -415,15 +415,18 @@ function OweTab() {
       <Card className="p-4 space-y-3">
         <div>
           <div className="font-medium text-[14px]">Add things your bank doesn't know about</div>
-          <div className="text-[12px] text-muted-foreground">Your house, truck, a business you own, or a loan that isn't linked.</div>
+          <div className="text-[12px] text-muted-foreground">Your house, a car, a business you own, or a loan that isn't linked. Business trucks and loans stay out.</div>
         </div>
         {d.untracked.length > 0 && (
           <div className="flex flex-wrap gap-2">
-            {d.untracked.map((u) => (
-              <Button key={u.id} size="sm" variant="outline" className="h-8" onClick={() => setDraft({ id: "", name: u.name, side: u.balance < 0 ? "liability" : "asset", group: u.balance < 0 ? "Other loans" : "Other things I own", amount: Math.abs(u.balance) })}>
+            {d.untracked.map((u) => (<span key={u.id} className="contents">
+              <Button size="sm" variant="outline" className="h-8" onClick={() => setDraft({ id: "", name: u.name, side: u.balance < 0 ? "liability" : "asset", group: u.balance < 0 ? "Other loans" : "Other things I own", amount: Math.abs(u.balance) })}>
                 <Plus className="h-3.5 w-3.5 mr-1" />{u.name} {$(u.balance)} <span className="ml-1 text-muted-foreground">(from your bank)</span>
               </Button>
-            ))}
+              <Button size="sm" variant="ghost" className="h-8 text-muted-foreground" onClick={async () => { await apiRequest("POST", "/api/books/balance-hide", { id: u.id }); queryClient.invalidateQueries({ queryKey: ["/api/books/balance-sheet"] }); }}>
+                It's business, hide
+              </Button>
+            </span>))}
           </div>
         )}
         <div className="flex flex-wrap gap-2">

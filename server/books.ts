@@ -292,6 +292,16 @@ export function saveManualItems(items: ManualItem[]) {
   return clean;
 }
 
+export function getHiddenUntracked(): number[] {
+  try { return JSON.parse(storage.getSetting("balance_sheet_hidden") || "[]"); } catch { return []; }
+}
+export function hideUntracked(id: number) {
+  const cur = getHiddenUntracked();
+  if (!cur.includes(Number(id))) cur.push(Number(id));
+  storage.setSetting("balance_sheet_hidden", JSON.stringify(cur));
+  return { hidden: cur };
+}
+
 export function balanceSheet() {
   init();
   const accounts = storage.listAccounts().filter((a) => !a.archived);
@@ -312,7 +322,7 @@ export function balanceSheet() {
   let sfIgnored: any[] = [];
   try { sfIgnored = sqlite.prepare("SELECT id, name, balance FROM simplefin_accounts WHERE ignored = 1").all() as any[]; } catch {}
   const untracked = sfIgnored
-    .filter((u) => u.balance != null && !manual.some((m) => m.name === u.name))
+    .filter((u) => u.balance != null && !manual.some((m) => m.name === u.name) && !getHiddenUntracked().includes(Number(u.id)))
     .map((u) => ({ id: u.id, name: u.name, balance: u.balance }));
 
   const sum = (ls: { amount: number }[]) => ls.reduce((s, l) => s + l.amount, 0);
