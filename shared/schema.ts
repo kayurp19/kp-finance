@@ -82,6 +82,11 @@ export const bills = sqliteTable("bills", {
   reminderDaysBefore: integer("reminder_days_before").notNull().default(3),
   notes: text("notes"),
   archived: integer("archived", { mode: "boolean" }).notNull().default(false),
+  billGroup: text("bill_group").notNull().default("Other"), // Housing | Utilities | Auto | Insurance | Cards & Loans | Subscriptions | Other
+  variableAmount: integer("variable_amount", { mode: "boolean" }).notNull().default(false),
+  matchKeyword: text("match_keyword"), // text in the bank description that identifies this bill's payment
+  payToAccountId: integer("pay_to_account_id"), // card/loan account this bill pays (payment shows as inflow there)
+  lastPaidDate: text("last_paid_date"),
 });
 
 export const billPayments = sqliteTable("bill_payments", {

@@ -4,18 +4,18 @@ import { useTheme } from "@/lib/theme";
 import { useAuth } from "@/lib/auth";
 import {
   LayoutDashboard, Wallet, ListTree, Upload, Calendar,
-  Tags, BarChart3, Settings, Sun, Moon, LogOut, Building2, Menu, X,
-} from "lucide-react";
+  Tags, BarChart3, Settings, Sun, Moon, LogOut, Building2, Menu, X, Calculator } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Logo } from "@/components/Logo";
 import { QuickAddButton } from "@/components/QuickAddDialog";
 
 const NAV = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard, exact: true },
+  { href: "/plan", label: "Plan & Afford", icon: Calculator },
+  { href: "/bills", label: "Bills", icon: Calendar },
   { href: "/accounts", label: "Accounts", icon: Wallet },
   { href: "/transactions", label: "Transactions", icon: ListTree },
   { href: "/import", label: "Import", icon: Upload },
-  { href: "/bills", label: "Bills", icon: Calendar },
   { href: "/businesses", label: "Reimbursements", icon: Building2 },
   { href: "/categories", label: "Categories", icon: Tags },
   { href: "/reports", label: "Reports", icon: BarChart3 },

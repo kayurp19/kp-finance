@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Landmark, RefreshCw, AlertTriangle, CheckCircle2, Trash2, Plus } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -205,6 +205,10 @@ function SfAccountRow({ a, accounts, owner }: { a: SfAccount; accounts: Account[
     a.mappedAccountId ? String(a.mappedAccountId) : a.suggestedAccountId ? String(a.suggestedAccountId) : ""
   );
   const [newType, setNewType] = useState("checking");
+  // Keep the picker in sync after the server changes the link (e.g. "Create as new").
+  useEffect(() => {
+    setChoice(a.mappedAccountId ? String(a.mappedAccountId) : a.suggestedAccountId ? String(a.suggestedAccountId) : "");
+  }, [a.mappedAccountId, a.suggestedAccountId]);
 
   const mapMut = useMutation({
     mutationFn: async (body: any) => apiRequest("PATCH", `/api/simplefin/accounts/${a.id}`, body),
@@ -250,7 +254,7 @@ function SfAccountRow({ a, accounts, owner }: { a: SfAccount; accounts: Account[
               {mapMut.isPending ? "Linking…" : !linked && choice && !dirty ? "Confirm match" : "Save"}
             </Button>
           )}
-          {!linked && !choice && (
+          {!linked && !choice && !createMut.isSuccess && (
             <>
               <Select value={newType} onValueChange={setNewType}>
                 <SelectTrigger className="h-8 w-32 text-[12px]"><SelectValue /></SelectTrigger>
@@ -262,7 +266,7 @@ function SfAccountRow({ a, accounts, owner }: { a: SfAccount; accounts: Account[
                   <SelectItem value="investment">Investment</SelectItem>
                 </SelectContent>
               </Select>
-              <Button size="sm" variant="outline" className="h-8" onClick={() => createMut.mutate()} disabled={createMut.isPending}>
+              <Button size="sm" variant="outline" className="h-8" onClick={() => createMut.mutate()} disabled={createMut.isPending || createMut.isSuccess}>
                 {createMut.isPending ? "Creating…" : "Create as new"}
               </Button>
               <Button size="sm" variant="ghost" className="h-8 text-muted-foreground" onClick={() => mapMut.mutate({ ignored: true })}>Ignore</Button>

@@ -209,6 +209,18 @@ function initSchema() {
   } catch (e) {
     console.warn("simplefin migration warning:", e);
   }
+  // Migration: richer bills (groups, variable amounts, auto-match).
+  try {
+    const bcols = sqlite.prepare("PRAGMA table_info(bills)").all() as { name: string }[];
+    const add = (n: string, ddl: string) => { if (!bcols.some((c) => c.name === n)) sqlite.exec(`ALTER TABLE bills ADD COLUMN ${ddl};`); };
+    add("bill_group", "bill_group TEXT NOT NULL DEFAULT 'Other'");
+    add("variable_amount", "variable_amount INTEGER NOT NULL DEFAULT 0");
+    add("match_keyword", "match_keyword TEXT");
+    add("pay_to_account_id", "pay_to_account_id INTEGER");
+    add("last_paid_date", "last_paid_date TEXT");
+  } catch (e) {
+    console.warn("bills migration warning:", e);
+  }
 }
 initSchema();
 
@@ -479,9 +491,9 @@ export const storage = {
     const payment = db.insert(billPayments).values({
       billId, paidDate, amount: bill.amount, transactionId: null,
     } as any).returning().get();
-    // Advance next due date
-    const next = advanceDueDate(bill.nextDueDate, bill.frequency);
-    db.update(bills).set({ nextDueDate: next }).where(eq(bills.id, billId)).run();
+    // Advance next due date (one-time bills get archived once paid)
+    const next = advanceDueDate(bill.nextDueDate, bill.frequency, bill.dueDay);
+    db.update(bills).set({ nextDueDate: next, lastPaidDate: paidDate, ...(bill.frequency === "one_time" ? { archived: true } : {}) } as any).where(eq(bills.id, billId)).run();
     return payment;
   },
   listBillPayments(billId?: number): BillPayment[] {
@@ -597,11 +609,22 @@ export const storage = {
   },
 };
 
-function advanceDueDate(currentISO: string, frequency: string): string {
-  const d = new Date(currentISO + "T00:00:00");
-  if (frequency === "monthly") d.setMonth(d.getMonth() + 1);
-  else if (frequency === "quarterly") d.setMonth(d.getMonth() + 3);
-  else if (frequency === "annual") d.setFullYear(d.getFullYear() + 1);
-  // one_time: leave as-is
-  return d.toISOString().slice(0, 10);
+export function advanceDueDate(currentISO: string, frequency: string, dueDay?: number | null): string {
+  // Pure calendar math in UTC; clamps day-of-month (Jan 31 + 1 month = Feb 28/29).
+  // dueDay (1-31) keeps monthly bills anchored so they don't drift after short months.
+  const [y, m, d0] = currentISO.split("-").map(Number);
+  const d = dueDay && dueDay >= 1 && dueDay <= 31 ? dueDay : d0;
+  const addMonths = (n: number) => {
+    const total = (m - 1) + n;
+    const ny = y + Math.floor(total / 12);
+    const nm = ((total % 12) + 12) % 12;
+    const last = new Date(Date.UTC(ny, nm + 1, 0)).getUTCDate();
+    return new Date(Date.UTC(ny, nm, Math.min(d, last))).toISOString().slice(0, 10);
+  };
+  if (frequency === "monthly") return addMonths(1);
+  if (frequency === "quarterly") return addMonths(3);
+  if (frequency === "semiannual") return addMonths(6);
+  if (frequency === "annual") return addMonths(12);
+  if (frequency === "weekly") return new Date(Date.UTC(y, m - 1, d + 7)).toISOString().slice(0, 10);
+  return currentISO; // one_time
 }

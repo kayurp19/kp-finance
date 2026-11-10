@@ -16,7 +16,27 @@ import { applyColumnMap, makeExternalId, parseCsv } from "./csv";
 import { pdfToCsv } from "./pdf-import";
 import { runYtdSetup } from "./ytd-setup";
 import * as simplefin from "./simplefin";
+import * as planner from "./planner";
+import { isTransferDescription } from "./money";
 import { sqlite } from "./storage";
+
+function backOneCycle(iso: string, frequency: string, dueDay?: number | null): string {
+  const [y, m, d0] = iso.split("-").map(Number);
+  const d = dueDay || d0;
+  const sub = (n: number) => {
+    const total = (m - 1) - n;
+    const ny = y + Math.floor(total / 12);
+    const nm = ((total % 12) + 12) % 12;
+    const last = new Date(Date.UTC(ny, nm + 1, 0)).getUTCDate();
+    return new Date(Date.UTC(ny, nm, Math.min(d, last))).toISOString().slice(0, 10);
+  };
+  if (frequency === "monthly") return sub(1);
+  if (frequency === "quarterly") return sub(3);
+  if (frequency === "semiannual") return sub(6);
+  if (frequency === "annual") return sub(12);
+  if (frequency === "weekly") return new Date(Date.UTC(y, m - 1, d0 - 7)).toISOString().slice(0, 10);
+  return iso;
+}
 
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
   app.use(cookieParser());
@@ -25,6 +45,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   seedDefaults();
   // Force password hash generation/persistence on startup
   getPasswordHash();
+
+  // Public, key-protected calendar feed for phone/Outlook calendar subscriptions (no login cookie available there).
+  app.get("/cal/:key/bills.ics", (req, res) => {
+    if (req.params.key !== planner.calendarKey()) return res.status(404).send("Not found");
+    res.setHeader("Content-Type", "text/calendar; charset=utf-8");
+    res.setHeader("Cache-Control", "no-cache");
+    res.send(planner.buildIcs());
+  });
 
   // ===== Auth =====
   app.post("/api/login", (req, res) => {
@@ -75,6 +103,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.patch("/api/accounts/:id", (req, res) => {
     const updated = storage.updateAccount(Number(req.params.id), req.body);
     if (!updated) return res.status(404).json({ message: "Not found" });
+    try { planner.autoMatchBills(); } catch (e) { console.error("auto-match", e); }
     res.json(updated);
   });
   app.delete("/api/accounts/:id", (req, res) => {
@@ -228,7 +257,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/bills", (req, res) => {
     const parsed = insertBillSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ message: parsed.error.message });
-    res.json(storage.createBill(parsed.data));
+    const bill = storage.createBill(parsed.data);
+    try { planner.autoMatchBills(); } catch (e) { console.error("auto-match", e); }
+    res.json(storage.getBill?.(bill.id) ?? bill);
   });
   app.patch("/api/bills/:id", (req, res) => {
     const updated = storage.updateBill(Number(req.params.id), req.body);
@@ -662,6 +693,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const conn = await simplefin.claimSetupToken(token, String(label || "SimpleFIN"));
       const sync = await simplefin.syncConnection(conn);
+      storage.setSetting("simplefin_last_sync_all", new Date().toISOString());
+      simplefin.retagSyncedTransfers();
       res.json({ ok: true, connectionId: conn.id, sync });
     } catch (e: any) {
       res.status(400).json({ message: e?.message || "Could not connect" });
@@ -698,6 +731,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const id = Number(req.params.id);
     const row = sqlite.prepare("SELECT * FROM simplefin_accounts WHERE id = ?").get(id) as any;
     if (!row) return res.status(404).json({ message: "Not found" });
+    if (row.mapped_account_id) return res.status(409).json({ message: "This bank account is already linked." });
     const type = String(req.body?.type || "checking");
     const owner = String(req.body?.owner || "Kayur");
     const last4 = (String(row.name).match(/\d{4}(?!.*\d{4})/) || [])[0] || null;
@@ -712,10 +746,97 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     simplefin.updateSfAccount(id, { mappedAccountId: acct.id });
     const conn = simplefin.listConnections().find((c) => c.id === row.connection_id);
     if (conn) await simplefin.syncConnection(conn, { days: 90 });
+    simplefin.retagSyncedTransfers();
     res.json({ ok: true, account: storage.getAccount(acct.id) });
   });
   app.delete("/api/simplefin/connections/:id", (req, res) => {
     simplefin.deleteConnection(Number(req.params.id));
+    res.json({ ok: true });
+  });
+
+  // ===== Merge duplicate accounts =====
+  // Moves every transaction from :id into targetId (skipping rows that already exist there), re-points
+  // bank-sync links and bills, then deletes :id.
+  app.post("/api/accounts/:id/merge-into", (req, res) => {
+    const fromId = Number(req.params.id);
+    const toId = Number(req.body?.targetId);
+    const from = storage.getAccount(fromId), to = storage.getAccount(toId);
+    if (!from || !to || fromId === toId) return res.status(400).json({ message: "Pick two different accounts" });
+    const rows = sqlite.prepare("SELECT * FROM transactions WHERE account_id = ?").all(fromId) as any[];
+    let moved = 0, dropped = 0;
+    const tx = sqlite.transaction(() => {
+      for (const r of rows) {
+        const dupe = r.simplefin_id
+          ? sqlite.prepare("SELECT id FROM transactions WHERE account_id = ? AND simplefin_id = ?").get(toId, r.simplefin_id)
+          : sqlite.prepare("SELECT id FROM transactions WHERE account_id = ? AND external_id = ?").get(toId, r.external_id);
+        const fuzzy = !dupe && sqlite.prepare("SELECT id FROM transactions WHERE account_id = ? AND amount = ? AND date BETWEEN date(?, '-3 days') AND date(?, '+3 days') AND simplefin_id IS NULL").get(toId, r.amount, r.date, r.date) as any;
+        if (dupe) { sqlite.prepare("DELETE FROM transactions WHERE id = ?").run(r.id); dropped++; continue; }
+        if (fuzzy && r.simplefin_id) {
+          sqlite.prepare("UPDATE transactions SET simplefin_id = ? WHERE id = ?").run(r.simplefin_id, fuzzy.id);
+          sqlite.prepare("DELETE FROM transactions WHERE id = ?").run(r.id); dropped++; continue;
+        }
+        sqlite.prepare("UPDATE transactions SET account_id = ? WHERE id = ?").run(toId, r.id); moved++;
+      }
+      // Bank link: target takes over the source's link if it has none.
+      const toLinked = sqlite.prepare("SELECT id FROM simplefin_accounts WHERE mapped_account_id = ?").get(toId);
+      if (!toLinked) sqlite.prepare("UPDATE simplefin_accounts SET mapped_account_id = ? WHERE mapped_account_id = ?").run(toId, fromId);
+      else sqlite.prepare("UPDATE simplefin_accounts SET mapped_account_id = NULL WHERE mapped_account_id = ?").run(fromId);
+      const fromRaw = sqlite.prepare("SELECT bank_balance, bank_balance_at, last4 FROM accounts WHERE id = ?").get(fromId) as any;
+      if (!toLinked && fromRaw?.bank_balance != null) sqlite.prepare("UPDATE accounts SET bank_balance = ?, bank_balance_at = ? WHERE id = ?").run(fromRaw.bank_balance, fromRaw.bank_balance_at, toId);
+      if (!to.last4 && fromRaw?.last4) sqlite.prepare("UPDATE accounts SET last4 = ? WHERE id = ?").run(fromRaw.last4, toId);
+      sqlite.prepare("UPDATE bills SET account_id = ? WHERE account_id = ?").run(toId, fromId);
+      sqlite.prepare("UPDATE bills SET pay_to_account_id = ? WHERE pay_to_account_id = ?").run(toId, fromId);
+      sqlite.prepare("UPDATE import_batches SET account_id = ? WHERE account_id = ?").run(toId, fromId);
+      sqlite.prepare("DELETE FROM accounts WHERE id = ?").run(fromId);
+    });
+    tx();
+    storage.recomputeAccountBalance(toId);
+    res.json({ ok: true, moved, dropped, account: storage.getAccount(toId) });
+  });
+
+  // ===== Bills: overview, setup, suggestions, calendar =====
+  app.get("/api/bills/overview", (_req, res) => res.json(planner.billsOverview()));
+  app.get("/api/bills/suggestions", (_req, res) => res.json({ recurring: planner.billSuggestions(), cards: planner.cardBillGaps() }));
+  app.post("/api/bills/suggestions/dismiss", (req, res) => {
+    if (req.body?.key) planner.dismissSuggestion(String(req.body.key));
+    res.json({ ok: true });
+  });
+  app.post("/api/bills/auto-match", (_req, res) => res.json(planner.autoMatchBills()));
+  app.get("/api/bills/calendar-link", (req, res) => {
+    const host = req.get("x-forwarded-host") || req.get("host");
+    const proto = (req.get("x-forwarded-proto") || req.protocol || "https").split(",")[0];
+    const url = `${proto}://${host}/cal/${planner.calendarKey()}/bills.ics`;
+    res.json({ url, webcal: url.replace(/^https?:/, "webcal:") });
+  });
+  app.post("/api/bills/calendar-link/rotate", (_req, res) => { planner.rotateCalendarKey(); res.json({ ok: true }); });
+  app.get("/api/bills/:id/payments", (req, res) => res.json(storage.listBillPayments(Number(req.params.id))));
+  app.delete("/api/bills/payments/:pid", (req, res) => {
+    // Undo a payment: removes the record and moves the due date back one cycle.
+    const p = sqlite.prepare("SELECT * FROM bill_payments WHERE id = ?").get(Number(req.params.pid)) as any;
+    if (!p) return res.status(404).json({ message: "Not found" });
+    const b = storage.getBill(p.bill_id);
+    sqlite.prepare("DELETE FROM bill_payments WHERE id = ?").run(p.id);
+    if (b) {
+      const prev = sqlite.prepare("SELECT paid_date FROM bill_payments WHERE bill_id = ? ORDER BY paid_date DESC LIMIT 1").get(b.id) as any;
+      const back = backOneCycle(b.nextDueDate, b.frequency, b.dueDay);
+      storage.updateBill(b.id, { nextDueDate: back, lastPaidDate: prev?.paid_date || null, archived: false } as any);
+      if (p.transaction_id) {
+        // Don't let auto-match immediately re-link the same transaction.
+        const ign = JSON.parse(storage.getSetting("bill_match_ignored") || "[]");
+        ign.push(p.transaction_id);
+        storage.setSetting("bill_match_ignored", JSON.stringify(ign));
+      }
+    }
+    res.json({ ok: true });
+  });
+
+  // ===== Plan & affordability =====
+  app.get("/api/plan", (_req, res) => res.json(planner.buildPlan()));
+  app.post("/api/plan/settings", (req, res) => {
+    const { monthlyIncome, buffer } = req.body || {};
+    if (monthlyIncome === null || monthlyIncome === "") storage.setSetting("plan_monthly_income", "");
+    else if (monthlyIncome !== undefined) storage.setSetting("plan_monthly_income", String(Math.round(Number(monthlyIncome))));
+    if (buffer !== undefined) storage.setSetting("plan_buffer", String(Math.max(0, Math.round(Number(buffer)))));
     res.json({ ok: true });
   });
 
@@ -810,7 +931,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       // We DO NOT blanket-treat positive amounts on credit cards as transfers —
       // those can also be refunds (which are not income but also not transfers).
       const d = (t.description || "").toLowerCase();
-      if (/payment\s*thank\s*you|payment\s*received|mobile\s*payment|autopay|internet\s*trf\s*to\s*cca|online\s*payment|online\s*transfer|internet\s*payment/.test(d)) return true;
+      if (isTransferDescription(d)) return true;
       return false;
     };
     const isIncomeTx = (t: { categoryId: number | null; amount: number; accountId: number; description: string }) => {

@@ -4,6 +4,7 @@
 // - GET {accessUrl}/accounts?start-date=<unix>&end-date=<unix> -> { errors|errlist, accounts: [...] }
 // The access URL is stored server-side only and is never returned to the browser.
 import { sqlite, storage } from "./storage";
+import { isTransferDescription } from "./money";
 
 export interface SfConnectionRow {
   id: number;
@@ -193,6 +194,22 @@ export async function syncConnection(conn: SfConnectionRow, opts: { days?: numbe
   return result;
 }
 
+function transfersCategoryId(): number | null {
+  const c = storage.listCategories().find((x) => x.name === "Transfers");
+  return c ? c.id : null;
+}
+
+// One-time + ongoing cleanup: synced rows that are really transfers/card payments get the Transfers category.
+export function retagSyncedTransfers(): number {
+  const tid = transfersCategoryId();
+  if (!tid) return 0;
+  const rows = sqlite.prepare("SELECT id, description, category_id FROM transactions WHERE external_id LIKE 'sf:%' AND (category_id IS NULL OR category_id != ?)").all(tid) as any[];
+  let n = 0;
+  const upd = sqlite.prepare("UPDATE transactions SET category_id = ? WHERE id = ?");
+  for (const r of rows) if (isTransferDescription(r.description)) { upd.run(tid, r.id); n++; }
+  return n;
+}
+
 // Imports SimpleFIN transactions into a KP account.
 // Dedupe: (1) exact SimpleFIN id already stored; (2) a statement-uploaded row in the same account with the
 // same amount within 3 days that hasn't been claimed yet -> link it instead of creating a duplicate.
@@ -224,7 +241,11 @@ function importTransactions(accountId: number, txns: any[]): { imported: number;
     }
     const description = String(t.description || t.payee || t.memo || "Transaction").trim();
     if (sameStmt.get(accountId, date, amount, description)) continue;
-    const { categoryId, cleanMerchant } = storage.applyRules(description, t.payee || null);
+    const ruled = storage.applyRules(description, t.payee || null);
+    const cleanMerchant = ruled.cleanMerchant;
+    // Card payments / transfers between your own accounts go to Transfers before any merchant rule
+    // (e.g. "MOBILE PAYMENT" must not match a Mobil gas rule).
+    const categoryId = isTransferDescription(description) ? transfersCategoryId() ?? ruled.categoryId : ruled.categoryId;
     storage.createTransaction({
       accountId,
       date,
@@ -253,6 +274,8 @@ export async function syncAll(opts: { days?: number } = {}): Promise<SyncResult[
   const out: SyncResult[] = [];
   for (const c of listConnections()) out.push(await syncConnection(c, opts));
   storage.setSetting("simplefin_last_sync_all", new Date().toISOString());
+  retagSyncedTransfers();
+  try { (await import("./planner")).autoMatchBills(); } catch (e) { console.warn("[bills] auto-match failed", e); }
   return out;
 }
 
